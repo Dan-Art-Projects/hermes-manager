@@ -1,0 +1,196 @@
+export type AgentStatus = 'unknown' | 'online' | 'offline' | 'busy';
+export type TaskStatus = 'backlog' | 'ready' | 'running' | 'waiting' | 'review' | 'done' | 'blocked';
+export type Priority = 'low' | 'medium' | 'high';
+export type Runner = 'hermes' | 'opencode' | 'codex' | 'claude';
+export type CodingTool = Exclude<Runner, 'hermes'>;
+export const codingTools: CodingTool[] = ['claude', 'codex', 'opencode'];
+export const runnerNames: Record<Runner, string> = {
+  hermes: 'Hermes',
+  claude: 'Claude Code',
+  codex: 'Codex',
+  opencode: 'OpenCode',
+};
+export const agentColors = [
+  'jade',
+  'sky',
+  'amber',
+  'rose',
+  'violet',
+  'lime',
+  'coral',
+  'teal',
+  'gold',
+  'orchid',
+  'azure',
+  'sand',
+] as const;
+export type AgentColor = (typeof agentColors)[number];
+
+export interface ToolInfo {
+  path: string;
+  version: string;
+}
+
+export interface Agent {
+  model?: string;
+  provider?: string;
+  transport?: 'ssh' | 'local';
+  id: string;
+  name: string;
+  color?: AgentColor;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'password' | 'privateKey';
+  hermesPath: string;
+  workdir: string;
+  profile: string;
+  fingerprint?: string;
+  /** A host key was observed but not yet trusted. Computed for snapshots, never stored. */
+  hostKeyPending?: boolean;
+  /** Hermes accepts --resume for follow-up replies (detected by the connection check). */
+  resume?: boolean;
+  /** Coding CLIs found by the last connection check. */
+  tools?: Partial<Record<CodingTool, ToolInfo>>;
+  /** Explicit coding CLI paths; empty entries are auto-detected. */
+  toolPaths?: Partial<Record<CodingTool, string>>;
+  /** Per-agent coding CLI model overrides; empty entries follow the global default. */
+  toolModels?: Partial<Record<CodingTool, string>>;
+  status: AgentStatus;
+  lastSeen?: string;
+  lastError?: string;
+  version?: string;
+  createdAt: string;
+  hasCredential: boolean;
+}
+
+export interface Turn {
+  role: 'user' | 'agent';
+  text: string;
+  at: string;
+}
+
+export interface Task {
+  scheduleId?: string;
+  id: string;
+  title: string;
+  description: string;
+  agentId: string | null;
+  runner?: Runner;
+  /** Optional working directory on the agent's machine; overrides the agent's default. */
+  workdir?: string;
+  status: TaskStatus;
+  priority: Priority;
+  createdAt: string;
+  updatedAt: string;
+  startedAt?: string;
+  finishedAt?: string;
+  report?: string;
+  sessionId?: string;
+  exitCode?: number;
+  error?: string;
+  waitingReason?: string;
+  turns?: Turn[];
+}
+
+export interface Schedule {
+  id: string;
+  title: string;
+  description: string;
+  agentId: string;
+  runner?: Runner;
+  nextRun: string;
+  intervalMinutes: number;
+  enabled: boolean;
+  lastTaskId?: string;
+  lastError?: string;
+}
+
+export interface Artifact {
+  id: string;
+  name: string;
+  taskId: string | null;
+  kind: 'document' | 'image' | 'video' | 'audio';
+  mime: string;
+  size: number;
+  createdAt: string;
+}
+
+export interface CatalogModel {
+  id: string;
+  name: string;
+  input: number | null;
+  output: number | null;
+  free: boolean;
+}
+
+export interface ModelDefaults {
+  model: string;
+  provider: string;
+  tools: Partial<Record<CodingTool, string>>;
+}
+
+export interface TaskLog {
+  id: number;
+  taskId: string;
+  stream: 'stdout' | 'stderr' | 'system';
+  text: string;
+  createdAt: string;
+}
+
+export interface Activity {
+  id: string;
+  message: string;
+  createdAt: string;
+  kind: 'agent' | 'task' | 'system';
+}
+
+export interface AppSnapshot {
+  agents: Agent[];
+  tasks: Task[];
+  schedules: Schedule[];
+  defaults: ModelDefaults;
+  vault: { configured: boolean; unlocked: boolean };
+  activity: Activity[];
+  csrfToken: string;
+}
+
+export interface AgentInput {
+  model?: string;
+  provider?: string;
+  transport?: 'ssh' | 'local';
+  name: string;
+  color?: AgentColor;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'password' | 'privateKey';
+  hermesPath: string;
+  workdir: string;
+  profile: string;
+  toolPaths?: Partial<Record<CodingTool, string>>;
+  toolModels?: Partial<Record<CodingTool, string>>;
+  credentials?: { password?: string; privateKey?: string; passphrase?: string };
+}
+
+export type ServerEvent = { type: 'state'; data: AppSnapshot } | { type: 'log'; data: TaskLog };
+
+/** Agent override wins as a pair; otherwise the global default; otherwise the CLI's own default. */
+export function effectiveModel(
+  agent: Pick<Agent, 'model' | 'provider'>,
+  defaults: Pick<ModelDefaults, 'model' | 'provider'>,
+): { model: string; provider: string; source: 'agent' | 'global' | 'default' } {
+  if (agent.model || agent.provider)
+    return { model: agent.model ?? '', provider: agent.provider ?? '', source: 'agent' };
+  if (defaults.model || defaults.provider)
+    return { model: defaults.model, provider: defaults.provider, source: 'global' };
+  return { model: '', provider: '', source: 'default' };
+}
+
+export function effectiveToolModel(
+  agent: Pick<Agent, 'toolModels'>,
+  defaults: Pick<ModelDefaults, 'tools'>,
+  tool: CodingTool,
+): string {
+  return agent.toolModels?.[tool] || defaults.tools?.[tool] || '';
+}
