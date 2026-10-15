@@ -1,16 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  ArrowLeft,
   Check,
-  ChevronDown,
   ChevronRight,
   ExternalLink,
   GitBranch,
-  GitPullRequest,
   Github,
   Loader2,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   X,
 } from 'lucide-react';
@@ -234,9 +234,12 @@ function BrowseTab({
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [repoSearch, setRepoSearch] = useState('');
+  const [orgFilter, setOrgFilter] = useState('all');
   const [selectedRepo, setSelectedRepo] = useState<GitHubRepo | null>(null);
   const [repoTab, setRepoTab] = useState<'issues' | 'prs' | 'projects'>('issues');
   const [items, setItems] = useState<GitHubIssue[]>([]);
+  const [itemSearch, setItemSearch] = useState('');
   const [projects, setProjects] = useState<GitHubProjectV2[]>([]);
   const [projectItems, setProjectItems] = useState<Record<string, GitHubProjectItem[]>>({});
   const [loadingItems, setLoadingItems] = useState(false);
@@ -259,19 +262,38 @@ function BrowseTab({
       .finally(() => setLoading(false));
   }, [github.configured, vaultUnlocked]);
 
-  async function selectRepo(repo: GitHubRepo) {
+  // Distinct orgs/users for the filter dropdown
+  const orgs = useMemo(() => [...new Set(repos.map((r) => r.owner))].sort(), [repos]);
+
+  const filteredRepos = useMemo(() => {
+    const q = repoSearch.toLowerCase();
+    return repos.filter(
+      (r) =>
+        (orgFilter === 'all' || r.owner === orgFilter) &&
+        (!q || r.name.toLowerCase().includes(q) || r.owner.toLowerCase().includes(q)),
+    );
+  }, [repos, repoSearch, orgFilter]);
+
+  async function openRepo(repo: GitHubRepo) {
     setSelectedRepo(repo);
     setItems([]);
     setProjects([]);
     setSelected(new Set());
     setSelectedProjectItems(new Map());
     setImportResult(null);
+    setItemSearch('');
+    await loadRepoTab(repo, repoTab);
+  }
+
+  async function loadRepoTab(repo: GitHubRepo, t: typeof repoTab) {
     setLoadingItems(true);
+    setItems([]);
+    setProjects([]);
     try {
-      if (repoTab === 'issues') {
+      if (t === 'issues') {
         const data = await request<GitHubIssue[]>(`/github/repos/${repo.owner}/${repo.name}/issues`);
         setItems(data);
-      } else if (repoTab === 'prs') {
+      } else if (t === 'prs') {
         const data = await request<GitHubIssue[]>(`/github/repos/${repo.owner}/${repo.name}/pulls`);
         setItems(data);
       } else {
@@ -285,30 +307,12 @@ function BrowseTab({
     }
   }
 
-  async function changeRepoTab(t: 'issues' | 'prs' | 'projects') {
+  async function changeRepoTab(t: typeof repoTab) {
     setRepoTab(t);
-    setItems([]);
-    setProjects([]);
     setSelected(new Set());
     setSelectedProjectItems(new Map());
-    if (!selectedRepo) return;
-    setLoadingItems(true);
-    try {
-      if (t === 'issues') {
-        const data = await request<GitHubIssue[]>(`/github/repos/${selectedRepo.owner}/${selectedRepo.name}/issues`);
-        setItems(data);
-      } else if (t === 'prs') {
-        const data = await request<GitHubIssue[]>(`/github/repos/${selectedRepo.owner}/${selectedRepo.name}/pulls`);
-        setItems(data);
-      } else {
-        const data = await request<GitHubProjectV2[]>('/github/projects');
-        setProjects(data.filter((p) => !p.closed));
-      }
-    } catch (e) {
-      setError(msg(e));
-    } finally {
-      setLoadingItems(false);
-    }
+    setItemSearch('');
+    if (selectedRepo) await loadRepoTab(selectedRepo, t);
   }
 
   async function loadProjectItems(projectId: string) {
@@ -324,8 +328,7 @@ function BrowseTab({
   function toggleItem(url: string) {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(url)) next.delete(url);
-      else next.add(url);
+      if (next.has(url)) next.delete(url); else next.add(url);
       return next;
     });
   }
@@ -334,8 +337,7 @@ function BrowseTab({
     const key = item.url ?? item.id;
     setSelectedProjectItems((prev) => {
       const next = new Map(prev);
-      if (next.has(key)) next.delete(key);
-      else next.set(key, item);
+      if (next.has(key)) next.delete(key); else next.set(key, item);
       return next;
     });
   }
@@ -380,7 +382,6 @@ function BrowseTab({
       </div>
     );
   }
-
   if (!github.configured) {
     return (
       <div className="gh-setup-card">
@@ -389,171 +390,188 @@ function BrowseTab({
     );
   }
 
+  const filteredItems = items.filter((i) => !itemSearch || i.title.toLowerCase().includes(itemSearch.toLowerCase()));
   const selCount = repoTab !== 'projects' ? selected.size : selectedProjectItems.size;
 
+  // Repo grid view
+  if (!selectedRepo) {
+    return (
+      <div className="gh-browse-full">
+        {error && (
+          <div className="gh-error">
+            <AlertCircle size={14} /> {error}
+            <button onClick={() => setError('')}><X size={12} /></button>
+          </div>
+        )}
+        <div className="gh-repo-toolbar">
+          <div className="gh-search-wrap">
+            <Search size={14} className="gh-search-icon" />
+            <input
+              className="field gh-search-input"
+              placeholder="Search repositories…"
+              value={repoSearch}
+              onChange={(e) => setRepoSearch(e.target.value)}
+            />
+          </div>
+          <select className="field gh-org-select" value={orgFilter} onChange={(e) => setOrgFilter(e.target.value)}>
+            <option value="all">All owners</option>
+            {orgs.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+          {loading && <Loader2 size={15} className="spin" />}
+          <span className="gh-repo-count-label">{filteredRepos.length} repo{filteredRepos.length !== 1 ? 's' : ''}</span>
+        </div>
+        {filteredRepos.length === 0 && !loading && (
+          <div className="gh-empty-panel"><GitBranch size={28} /><p>No repositories match your filter.</p></div>
+        )}
+        <div className="gh-repo-grid">
+          {filteredRepos.map((repo) => (
+            <button key={repo.id} className="gh-repo-card" onClick={() => void openRepo(repo)}>
+              <div className="gh-repo-card-header">
+                <span className="gh-repo-card-owner">{repo.owner}</span>
+                {repo.private && <span className="gh-repo-private">private</span>}
+              </div>
+              <span className="gh-repo-card-name">{repo.name}</span>
+              {repo.description && <span className="gh-repo-card-desc">{repo.description}</span>}
+              <div className="gh-repo-card-footer">
+                {repo.language && <span className="gh-repo-lang">{repo.language}</span>}
+                {repo.openIssuesCount > 0 && (
+                  <span className="gh-repo-issues">{repo.openIssuesCount} open</span>
+                )}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // Repo detail view
   return (
-    <div className="gh-browse">
+    <div className="gh-browse-full">
       {error && (
         <div className="gh-error">
           <AlertCircle size={14} /> {error}
           <button onClick={() => setError('')}><X size={12} /></button>
         </div>
       )}
-      <div className="gh-browse-layout">
-        <div className="gh-repo-list">
-          <div className="gh-repo-list-header">
-            <span>Repositories</span>
-            {loading && <Loader2 size={14} className="spin" />}
-          </div>
-          {repos.map((repo) => (
-            <button
-              key={repo.id}
-              className={`gh-repo-item ${selectedRepo?.id === repo.id ? 'active' : ''}`}
-              onClick={() => void selectRepo(repo)}
-            >
-              <span className="gh-repo-name">{repo.name}</span>
-              <span className="gh-repo-owner">{repo.owner}</span>
-              {repo.openIssuesCount > 0 && <span className="gh-repo-count">{repo.openIssuesCount}</span>}
+      <div className="gh-detail-header">
+        <button className="button ghost gh-back-btn" onClick={() => setSelectedRepo(null)}>
+          <ArrowLeft size={14} /> All repos
+        </button>
+        <span className="gh-detail-title">
+          <span className="gh-repo-card-owner">{selectedRepo.owner}</span>
+          <span> / </span>
+          <strong>{selectedRepo.name}</strong>
+        </span>
+        {selectedRepo.description && <span className="gh-detail-desc">{selectedRepo.description}</span>}
+      </div>
+
+      <div className="gh-detail-toolbar">
+        <div className="gh-repo-tabs">
+          {(['issues', 'prs', 'projects'] as const).map((t) => (
+            <button key={t} className={`gh-tab ${repoTab === t ? 'active' : ''}`} onClick={() => void changeRepoTab(t)}>
+              {t === 'prs' ? 'Pull Requests' : t.charAt(0).toUpperCase() + t.slice(1)}
             </button>
           ))}
-          {!loading && repos.length === 0 && <p className="gh-empty">No repositories found.</p>}
         </div>
+        {repoTab !== 'projects' && (
+          <div className="gh-search-wrap">
+            <Search size={13} className="gh-search-icon" />
+            <input
+              className="field gh-search-input"
+              placeholder="Filter…"
+              value={itemSearch}
+              onChange={(e) => setItemSearch(e.target.value)}
+            />
+          </div>
+        )}
+      </div>
 
-        <div className="gh-item-panel">
-          {!selectedRepo ? (
-            <div className="gh-empty-panel">
-              <GitBranch size={32} />
-              <p>Select a repository to browse its issues, pull requests, and projects.</p>
-            </div>
-          ) : (
-            <>
-              <div className="gh-repo-tabs">
-                {(['issues', 'prs', 'projects'] as const).map((t) => (
-                  <button
-                    key={t}
-                    className={`gh-tab ${repoTab === t ? 'active' : ''}`}
-                    onClick={() => void changeRepoTab(t)}
-                  >
-                    {t === 'prs' ? 'Pull Requests' : t.charAt(0).toUpperCase() + t.slice(1)}
-                  </button>
-                ))}
-              </div>
+      <div className="gh-item-panel-flat">
+        {loadingItems ? (
+          <div className="gh-loading"><Loader2 size={18} className="spin" /> Loading…</div>
+        ) : repoTab === 'projects' ? (
+          <div className="gh-projects">
+            {projects.length === 0 && <p className="gh-empty">No open projects found.</p>}
+            {projects.map((project) => (
+              <details
+                key={project.id}
+                className="gh-project-group"
+                onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) void loadProjectItems(project.id); }}
+              >
+                <summary className="gh-project-summary">
+                  <ChevronRight size={14} className="gh-chevron" />
+                  <span>{project.title}</span>
+                  <span className="gh-project-owner">{project.owner}</span>
+                </summary>
+                {projectItems[project.id] ? (
+                  <div className="gh-project-items">
+                    {projectItems[project.id].map((item) => {
+                      const key = item.url ?? item.id;
+                      const imported = item.url ? existingRefs.has(item.url) : false;
+                      return (
+                        <label key={item.id} className={`gh-item ${imported ? 'imported' : ''}`}>
+                          <input type="checkbox" disabled={imported} checked={selectedProjectItems.has(key)} onChange={() => toggleProjectItem(item)} />
+                          <span className="gh-item-title">{item.title}</span>
+                          {item.status && <span className="gh-item-status">{item.status}</span>}
+                          {imported && <span className="gh-imported-badge">Imported</span>}
+                        </label>
+                      );
+                    })}
+                    {projectItems[project.id].length === 0 && <p className="gh-empty">No items.</p>}
+                  </div>
+                ) : <p className="gh-empty">Loading…</p>}
+              </details>
+            ))}
+          </div>
+        ) : (
+          <div className="gh-issue-list">
+            {filteredItems.length === 0 && (
+              <p className="gh-empty">No {repoTab === 'prs' ? 'pull requests' : 'issues'} {itemSearch ? 'match your filter' : 'found'}.</p>
+            )}
+            {filteredItems.map((item) => {
+              const imported = existingRefs.has(item.url);
+              return (
+                <label key={item.number} className={`gh-item ${imported ? 'imported' : ''}`}>
+                  <input type="checkbox" disabled={imported} checked={selected.has(item.url)} onChange={() => toggleItem(item.url)} />
+                  <span className="gh-item-number">#{item.number}</span>
+                  <span className="gh-item-title">{item.title}</span>
+                  {item.labels.map((l) => <span key={l} className="gh-label">{l}</span>)}
+                  {imported && <span className="gh-imported-badge">Imported</span>}
+                  <a href={item.url} target="_blank" rel="noreferrer" className="gh-item-link" onClick={(e) => e.stopPropagation()}>
+                    <ExternalLink size={11} />
+                  </a>
+                </label>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
-              {loadingItems ? (
-                <div className="gh-loading"><Loader2 size={18} className="spin" /> Loading...</div>
-              ) : repoTab === 'projects' ? (
-                <div className="gh-projects">
-                  {projects.length === 0 && <p className="gh-empty">No open projects found for your account.</p>}
-                  {projects.map((project) => (
-                    <details
-                      key={project.id}
-                      className="gh-project-group"
-                      onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) void loadProjectItems(project.id); }}
-                    >
-                      <summary className="gh-project-summary">
-                        <ChevronRight size={14} className="gh-chevron" />
-                        <span>{project.title}</span>
-                        <span className="gh-project-owner">{project.owner}</span>
-                      </summary>
-                      {projectItems[project.id] ? (
-                        <div className="gh-project-items">
-                          {projectItems[project.id].map((item) => {
-                            const key = item.url ?? item.id;
-                            const imported = item.url ? existingRefs.has(item.url) : false;
-                            return (
-                              <label key={item.id} className={`gh-item ${imported ? 'imported' : ''}`}>
-                                <input
-                                  type="checkbox"
-                                  disabled={imported}
-                                  checked={selectedProjectItems.has(key)}
-                                  onChange={() => toggleProjectItem(item)}
-                                />
-                                <span className="gh-item-title">{item.title}</span>
-                                {item.status && <span className="gh-item-status">{item.status}</span>}
-                                {imported && <span className="gh-imported-badge">Imported</span>}
-                              </label>
-                            );
-                          })}
-                          {projectItems[project.id].length === 0 && (
-                            <p className="gh-empty">No items in this project.</p>
-                          )}
-                        </div>
-                      ) : (
-                        <p className="gh-empty">Loading items...</p>
-                      )}
-                    </details>
-                  ))}
-                </div>
-              ) : (
-                <div className="gh-issue-list">
-                  {items.length === 0 && <p className="gh-empty">No open {repoTab === 'prs' ? 'pull requests' : 'issues'} found.</p>}
-                  {items.map((item) => {
-                    const imported = existingRefs.has(item.url);
-                    return (
-                      <label key={item.number} className={`gh-item ${imported ? 'imported' : ''}`}>
-                        <input
-                          type="checkbox"
-                          disabled={imported}
-                          checked={selected.has(item.url)}
-                          onChange={() => toggleItem(item.url)}
-                        />
-                        <span className="gh-item-number">#{item.number}</span>
-                        <span className="gh-item-title">{item.title}</span>
-                        {item.labels.map((l) => (
-                          <span key={l} className="gh-label">{l}</span>
-                        ))}
-                        {imported && <span className="gh-imported-badge">Imported</span>}
-                        <a href={item.url} target="_blank" rel="noreferrer" className="gh-item-link" onClick={(e) => e.stopPropagation()}>
-                          <ExternalLink size={11} />
-                        </a>
-                      </label>
-                    );
-                  })}
-                </div>
-              )}
-
-              {selCount > 0 && (
-                <div className="gh-import-bar">
-                  <span>{selCount} selected</span>
-                  <select
-                    className="field"
-                    value={importAgent}
-                    onChange={(e) => setImportAgent(e.target.value)}
-                  >
-                    <option value="">— Assign to agent —</option>
-                    {agents.map((a) => (
-                      <option key={a.id} value={a.id}>{a.name}</option>
-                    ))}
-                  </select>
-                  <select
-                    className="field"
-                    value={importRunner}
-                    onChange={(e) => setImportRunner(e.target.value as Runner)}
-                  >
-                    <option value="hermes">Hermes</option>
-                    <option value="claude">Claude Code</option>
-                    <option value="codex">Codex</option>
-                    <option value="opencode">OpenCode</option>
-                  </select>
-                  <button
-                    className="button primary"
-                    disabled={importing || !importAgent || demo}
-                    onClick={() => void importSelected()}
-                  >
-                    {importing ? <Loader2 size={14} className="spin" /> : 'Create tasks'}
-                  </button>
-                  {importResult && (
-                    <span className="gh-import-result">
-                      {importResult.created > 0 && <><Check size={13} /> {importResult.created} created</>}
-                      {importResult.skipped > 0 && <>, {importResult.skipped} skipped</>}
-                    </span>
-                  )}
-                </div>
-              )}
-            </>
+      {selCount > 0 && (
+        <div className="gh-import-bar">
+          <span>{selCount} selected</span>
+          <select className="field" value={importAgent} onChange={(e) => setImportAgent(e.target.value)}>
+            <option value="">— Assign to agent —</option>
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <select className="field" value={importRunner} onChange={(e) => setImportRunner(e.target.value as Runner)}>
+            <option value="hermes">Hermes</option>
+            <option value="claude">Claude Code</option>
+            <option value="codex">Codex</option>
+            <option value="opencode">OpenCode</option>
+          </select>
+          <button className="button primary" disabled={importing || !importAgent || demo} onClick={() => void importSelected()}>
+            {importing ? <Loader2 size={14} className="spin" /> : 'Create tasks'}
+          </button>
+          {importResult && (
+            <span className="gh-import-result">
+              {importResult.created > 0 && <><Check size={13} /> {importResult.created} created</>}
+              {importResult.skipped > 0 && <>, {importResult.skipped} skipped</>}
+            </span>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
