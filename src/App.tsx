@@ -1443,9 +1443,9 @@ export default function App() {
               </aside>
             </div>
           )}
-          {['schedules', 'documents', 'media', 'models'].includes(view) &&
+          {['schedules', 'documents', 'media', 'github', 'settings'].includes(view) &&
             (demo ? (
-              <p>Exit demo to manage schedules, files, and models.</p>
+              <p>Exit demo to manage schedules, files, settings, and connected accounts.</p>
             ) : (
               <>
                 {view === 'schedules' && (
