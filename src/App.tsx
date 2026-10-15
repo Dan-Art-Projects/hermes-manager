@@ -58,11 +58,12 @@ import Modal from './components/Modal';
 import { AgentModal, BulkModelModal, TaskForm, TrustModal, VaultModal } from './components/Forms';
 import AttentionInbox from './components/Attention';
 import TaskDetail from './components/TaskDetail';
-import { Schedules, Library, Models } from './components/Workspace';
+import { Schedules, Library } from './components/Workspace';
 import GitHub from './components/GitHub';
+import Settings, { type Theme } from './components/Settings';
 
 const TerminalPanel = lazy(() => import('./components/TerminalPanel'));
-type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'models' | 'github';
+type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'settings';
 type Dialog =
   | { kind: 'agent'; agent?: Agent }
   | { kind: 'task'; status?: TaskStatus }
@@ -79,8 +80,8 @@ const viewNames: Record<View, string> = {
   schedules: 'Schedules',
   documents: 'Documents',
   media: 'Media gallery',
-  models: 'Models',
   github: 'GitHub',
+  settings: 'Settings',
 };
 const blank: AppSnapshot = {
   agents: [],
@@ -157,6 +158,25 @@ export default function App() {
   const [mobileNav, setMobileNav] = useState(false);
   const [smallScreen, setSmallScreen] = useState(() => window.matchMedia('(max-width: 760px)').matches);
   const [terminalAgent, setTerminalAgent] = useState<string>();
+  const [userName, setUserName] = useState<string>(() => {
+    try { return localStorage.getItem('hermes-manager:name') ?? ''; } catch { return ''; }
+  });
+  const [theme, setTheme] = useState<Theme>(() => {
+    try { return (localStorage.getItem('hermes-manager:theme') as Theme) ?? 'jade'; } catch { return 'jade'; }
+  });
+  useEffect(() => {
+    const el = document.documentElement;
+    if (theme === 'jade') el.removeAttribute('data-theme');
+    else el.setAttribute('data-theme', theme);
+  }, [theme]);
+  function saveName(value: string) {
+    setUserName(value);
+    try { localStorage.setItem('hermes-manager:name', value); } catch {}
+  }
+  function saveTheme(value: Theme) {
+    setTheme(value);
+    try { localStorage.setItem('hermes-manager:theme', value); } catch {}
+  }
   const state = demo ? demoState : (realState ?? blank);
   const needs = attention(state);
   const waitingAgents = new Set(
@@ -467,7 +487,7 @@ export default function App() {
               { id: 'github', icon: Github },
               { id: 'documents', icon: FileText },
               { id: 'media', icon: LayoutGrid },
-              { id: 'models', icon: Settings2 },
+              { id: 'settings', icon: Settings2 },
             ] as const
           ).map((item) => (
             <button
@@ -609,7 +629,9 @@ export default function App() {
                     : 'Set up vault'}
               </span>
             </button>
-            <span className="user-avatar">Y</span>
+            <button className="user-avatar" onClick={() => navigate('settings')} title="Settings">
+              {userName ? userName.slice(0, 1).toUpperCase() : <Settings2 size={14} />}
+            </button>
           </div>
         </header>
         {demo && (
@@ -685,17 +707,19 @@ export default function App() {
                   Check all agents
                 </button>
               )}
-              <button
-                className="button primary"
-                onClick={
-                  view === 'board' || view === 'reports'
-                    ? () => (demo ? sampleNotice() : setDialog({ kind: 'task' }))
-                    : addAgent
-                }
-              >
-                <Plus size={17} />
-                {view === 'board' || view === 'reports' ? 'New task' : 'Add agent'}
-              </button>
+              {view !== 'settings' && view !== 'github' && view !== 'schedules' && view !== 'documents' && view !== 'media' && view !== 'terminal' && (
+                <button
+                  className="button primary"
+                  onClick={
+                    view === 'board' || view === 'reports'
+                      ? () => (demo ? sampleNotice() : setDialog({ kind: 'task' }))
+                      : addAgent
+                  }
+                >
+                  <Plus size={17} />
+                  {view === 'board' || view === 'reports' ? 'New task' : 'Add agent'}
+                </button>
+              )}
             </div>
           </div>
           <section className="metrics" aria-label="Workspace overview">
@@ -1441,9 +1465,6 @@ export default function App() {
                     onReport={(id) => setDialog({ kind: 'detail', id })}
                   />
                 )}
-                {view === 'models' && (
-                  <Models request={request} agents={state.agents} defaults={state.defaults} />
-                )}
                 {view === 'github' && (
                   <GitHub
                     request={request}
@@ -1454,6 +1475,20 @@ export default function App() {
                     vaultUnlocked={state.vault.unlocked}
                     onVaultOpen={() => setDialog({ kind: 'vault' })}
                     demo={demo}
+                  />
+                )}
+                {view === 'settings' && (
+                  <Settings
+                    request={request}
+                    state={state}
+                    agents={state.agents}
+                    sshKeys={state.sshKeys}
+                    defaults={state.defaults}
+                    name={userName}
+                    theme={theme}
+                    onName={saveName}
+                    onTheme={saveTheme}
+                    onVaultChange={() => {}}
                   />
                 )}
               </>
