@@ -297,6 +297,33 @@ export default function App() {
       setChecking((current) => current.filter((id) => id !== agent.id));
     }
   }
+  async function probeAll() {
+    if (demo) { sampleNotice(); return; }
+    if (!state.vault.unlocked) { setDialog({ kind: 'vault' }); return; }
+    if (!state.agents.length) return;
+    const queue = [...state.agents];
+    const failed: string[] = [];
+    setChecking((current) => [...current, ...queue.map((a) => a.id)]);
+    const worker = async () => {
+      for (let agent = queue.shift(); agent; agent = queue.shift()) {
+        try {
+          await request(`/agents/${agent.id}/probe`, 'POST');
+        } catch {
+          failed.push(agent.name);
+        } finally {
+          const id = agent.id;
+          setChecking((current) => current.filter((v) => v !== id));
+        }
+      }
+    };
+    const total = state.agents.length;
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    setToast(
+      failed.length
+        ? { message: `${total - failed.length} of ${total} agents reachable. Offline: ${failed.join(', ')}.`, error: true }
+        : { message: `All ${total} agent${total === 1 ? '' : 's'} are reachable.` },
+    );
+  }
   async function bulkProbe() {
     if (demo) {
       sampleNotice();
@@ -650,6 +677,12 @@ export default function App() {
                 <button className="button secondary" onClick={() => void autoAssign()}>
                   <Activity size={15} />
                   Auto-assign
+                </button>
+              )}
+              {view === 'agents' && !demo && state.agents.length > 0 && (
+                <button className="button secondary" onClick={() => void probeAll()}>
+                  <RefreshCw size={15} />
+                  Check all agents
                 </button>
               )}
               <button
