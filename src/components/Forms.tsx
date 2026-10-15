@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -17,6 +17,7 @@ import {
   type AgentInput,
   type AppSnapshot,
   type Runner,
+  type SshKey,
   type Task,
   type TaskStatus,
 } from '../../shared/types';
@@ -124,9 +125,154 @@ export function VaultModal({
   );
 }
 
+export function SshKeyModal({
+  sshKeys,
+  request,
+  onClose,
+}: {
+  sshKeys: SshKey[];
+  request: Request;
+  onClose: () => void;
+}) {
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+
+  async function addKey(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy('add');
+    setError('');
+    const form = new FormData(event.currentTarget);
+    const passphrase = String(form.get('passphrase') ?? '').trim();
+    try {
+      await request('/ssh-keys', 'POST', {
+        name: String(form.get('name') ?? '').trim(),
+        privateKey: String(form.get('privateKey') ?? ''),
+        ...(passphrase ? { passphrase } : {}),
+      });
+      (event.target as HTMLFormElement).reset();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function deleteKey(key: SshKey) {
+    if (!confirm(`Remove "${key.name}"? Agents already using a copy of this key are not affected.`)) return;
+    setBusy(key.id);
+    setError('');
+    try {
+      await request(`/ssh-keys/${key.id}`, 'DELETE');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy('');
+    }
+  }
+
+  return (
+    <Modal title="Saved SSH keys" subtitle="Reuse one key across multiple agents." onClose={onClose}>
+      <div className="form-body">
+        {sshKeys.length > 0 && (
+          <ul className="key-list">
+            {sshKeys.map((key) => (
+              <li key={key.id} className="key-list-item">
+                <KeyRound size={14} />
+                <span>{key.name}</span>
+                <button
+                  type="button"
+                  className="button danger-text small"
+                  disabled={!!busy}
+                  onClick={() => void deleteKey(key)}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <form onSubmit={(e) => void addKey(e)}>
+          <label>
+            Key name
+            <input name="name" required maxLength={100} autoFocus placeholder="e.g. My server key" />
+          </label>
+          <label>
+            Private key
+            <textarea
+              name="privateKey"
+              className="mono"
+              rows={4}
+              required
+              placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label>
+            Key passphrase <span className="optional">optional</span>
+            <input name="passphrase" type="password" autoComplete="new-password" />
+          </label>
+          {error && (
+            <p role="alert" className="form-error">
+              {error}
+            </p>
+          )}
+          <footer className="form-footer">
+            <button type="button" className="button secondary" onClick={onClose}>
+              Close
+            </button>
+            <button className="button primary" disabled={busy === 'add'}>
+              {busy === 'add' ? 'Saving...' : 'Save key'}
+            </button>
+          </footer>
+        </form>
+      </div>
+    </Modal>
+  );
+}
+
+function TagInput({ value, onChange, placeholder }: { value: string[]; onChange: (v: string[]) => void; placeholder?: string }) {
+  const [input, setInput] = useState('');
+  function commit(raw: string) {
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed && !value.includes(trimmed)) onChange([...value, trimmed]);
+    setInput('');
+  }
+  function onKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      commit(input);
+    } else if (e.key === 'Backspace' && !input && value.length) {
+      onChange(value.slice(0, -1));
+    }
+  }
+  function onBlur() {
+    if (input.trim()) commit(input);
+  }
+  return (
+    <div className="tag-input">
+      {value.map((tag) => (
+        <span key={tag} className="tag-chip">
+          {tag}
+          <button type="button" aria-label={`Remove ${tag}`} onClick={() => onChange(value.filter((t) => t !== tag))}>×</button>
+        </span>
+      ))}
+      <input
+        type="text"
+        value={input}
+        placeholder={value.length ? '' : (placeholder ?? 'Type and press Enter or comma')}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={onKey}
+        onBlur={onBlur}
+      />
+    </div>
+  );
+}
+
 export function AgentModal({
   agent,
   agents = [],
+  sshKeys = [],
   request,
   onClose,
   onSaved,
@@ -134,6 +280,7 @@ export function AgentModal({
 }: {
   agent?: Agent;
   agents?: Agent[];
+  sshKeys?: SshKey[];
   request: Request;
   onClose: () => void;
   onSaved: (agent: Agent) => void;
@@ -141,8 +288,10 @@ export function AgentModal({
 }) {
   const [transport, setTransport] = useState<'ssh' | 'local'>(agent?.transport ?? 'ssh');
   const [localPath, setLocalPath] = useState(agent?.hermesPath ?? '');
+  const [localWorkdir, setLocalWorkdir] = useState(agent?.workdir ?? '');
   const [model, setModel] = useState(agent?.model ?? '');
   const [provider, setProvider] = useState(agent?.provider ?? '');
+  const [capabilities, setCapabilities] = useState<string[]>(agent?.capabilities ?? []);
   const taken = agents.filter((other) => other.id !== agent?.id).map((other) => other.color);
   const [color, setColor] = useState<AgentColor>(
     agent?.color ?? agentColors.find((value) => !taken.includes(value)) ?? agentColors[0],
@@ -150,15 +299,35 @@ export function AgentModal({
   async function chooseLocal() {
     setTransport('local');
     try {
-      const found = await request<{ hermesPath: string | null }>('/local-hermes');
+      const found = await request<{ hermesPath: string | null; workdir: string }>('/local-hermes');
       if (found.hermesPath) setLocalPath(found.hermesPath);
+      if (found.workdir && !agent?.workdir) setLocalWorkdir(found.workdir);
     } catch (error) {
       setError((error as Error).message);
     }
   }
   const [auth, setAuth] = useState<Agent['authType']>(agent?.authType ?? 'privateKey');
+  const [keySource, setKeySource] = useState<'saved' | 'paste'>(sshKeys.length > 0 ? 'saved' : 'paste');
+  const [selectedKeyId, setSelectedKeyId] = useState('');
+  const [showKeyManager, setShowKeyManager] = useState(false);
+  const [sshDetectedPath, setSshDetectedPath] = useState('');
+  const [detectBusy, setDetectBusy] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+
+  async function detectHermes() {
+    if (!agent) return;
+    setDetectBusy(true);
+    setError('');
+    try {
+      const result = await request<{ hermesPath: string }>(`/agents/${agent.id}/detect-hermes`, 'POST');
+      setSshDetectedPath(result.hermesPath);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setDetectBusy(false);
+    }
+  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -169,6 +338,7 @@ export function AgentModal({
       auth === 'password'
         ? { password: text('password') }
         : { privateKey: text('privateKey'), passphrase: text('passphrase') };
+    const usingSavedKey = transport === 'ssh' && auth === 'privateKey' && keySource === 'saved' && selectedKeyId;
     const input: AgentInput = {
       name: text('name').trim(),
       transport,
@@ -181,10 +351,16 @@ export function AgentModal({
       profile: text('profile').trim(),
       model: text('model').trim(),
       provider: text('provider').trim(),
+      role: text('role').trim() || undefined,
+      capabilities,
       color,
       toolPaths: Object.fromEntries(codingTools.map((tool) => [tool, text(`path-${tool}`).trim()])),
       toolModels: Object.fromEntries(codingTools.map((tool) => [tool, text(`model-${tool}`).trim()])),
-      ...(transport === 'ssh' && (credentials.password || credentials.privateKey) ? { credentials } : {}),
+      ...(usingSavedKey
+        ? { sshKeyId: selectedKeyId }
+        : transport === 'ssh' && (credentials.password || credentials.privateKey)
+          ? { credentials }
+          : {}),
     };
     // Edits send only what changed, so a model or colour change keeps the agent's verified connection.
     const blankTools = (value?: Record<string, string | undefined>) =>
@@ -198,6 +374,8 @@ export function AgentModal({
               return (
                 blankTools(value as Record<string, string>) !== blankTools(before as Record<string, string>)
               );
+            if (key === 'capabilities')
+              return JSON.stringify(value ?? []) !== JSON.stringify(before ?? []);
             return (value ?? '') !== (before ?? '');
           }),
         )
@@ -360,22 +538,73 @@ export function AgentModal({
             )}
             {auth === 'privateKey' ? (
               <>
-                <label>
-                  Private key
-                  <textarea
-                    name="privateKey"
-                    className="mono"
-                    rows={4}
-                    required={!agent || agent.authType !== auth}
-                    placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                </label>
-                <label>
-                  Key passphrase <span className="optional">optional</span>
-                  <input name="passphrase" type="password" autoComplete="new-password" />
-                </label>
+                {sshKeys.length > 0 && (
+                  <div className="segmented">
+                    <button
+                      type="button"
+                      className={keySource === 'saved' ? 'active' : ''}
+                      onClick={() => setKeySource('saved')}
+                    >
+                      <KeyRound size={15} />
+                      Saved key
+                    </button>
+                    <button
+                      type="button"
+                      className={keySource === 'paste' ? 'active' : ''}
+                      onClick={() => setKeySource('paste')}
+                    >
+                      Paste key
+                    </button>
+                  </div>
+                )}
+                {keySource === 'saved' && sshKeys.length > 0 ? (
+                  <label>
+                    SSH key
+                    <select
+                      value={selectedKeyId}
+                      onChange={(e) => setSelectedKeyId(e.target.value)}
+                      required={!agent || agent.authType !== auth}
+                    >
+                      <option value="">— select a saved key —</option>
+                      {sshKeys.map((key) => (
+                        <option key={key.id} value={key.id}>
+                          {key.name}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="field-hint">
+                      The key is copied into this agent's credential. Deleting the saved key later has no
+                      effect on this agent.
+                    </span>
+                  </label>
+                ) : (
+                  <>
+                    <label>
+                      Private key
+                      <textarea
+                        name="privateKey"
+                        className="mono"
+                        rows={4}
+                        required={!agent || agent.authType !== auth}
+                        placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                        autoComplete="off"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <label>
+                      Key passphrase <span className="optional">optional</span>
+                      <input name="passphrase" type="password" autoComplete="new-password" />
+                    </label>
+                  </>
+                )}
+                <button
+                  type="button"
+                  className="button ghost small"
+                  onClick={() => setShowKeyManager(true)}
+                >
+                  <KeyRound size={14} />
+                  Manage saved keys
+                </button>
               </>
             ) : (
               <label>
@@ -444,22 +673,55 @@ export function AgentModal({
           <div className="details-content">
             <label>
               Hermes executable
-              <input
-                name="hermesPath"
-                key={transport + localPath}
-                defaultValue={transport === 'local' ? localPath : (agent?.hermesPath ?? 'hermes')}
-                required={transport === 'local'}
-                placeholder="/home/hermes/.local/bin/hermes"
-              />
+              <div className="input-with-action">
+                <input
+                  name="hermesPath"
+                  key={transport + localPath + sshDetectedPath}
+                  defaultValue={
+                    transport === 'local'
+                      ? localPath
+                      : sshDetectedPath || (agent?.hermesPath ?? 'hermes')
+                  }
+                  required={transport === 'local'}
+                  placeholder="/home/user/.local/bin/hermes"
+                />
+                {transport === 'ssh' && agent && (
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    disabled={detectBusy || busy}
+                    onClick={() => void detectHermes()}
+                    title="SSH in and find the hermes binary automatically"
+                  >
+                    {detectBusy ? 'Detecting...' : 'Detect path'}
+                  </button>
+                )}
+              </div>
               <span className="field-hint">
                 {transport === 'local'
                   ? 'Absolute path to the Hermes executable on this computer.'
-                  : 'An absolute path is recommended. SSH may have a different PATH.'}
+                  : 'Use an absolute path — SSH sessions may have a different PATH than your shell.'}
               </span>
+              {sshDetectedPath && (
+                <span className="field-hint" style={{ color: 'var(--color-success, green)' }}>
+                  Detected: {sshDetectedPath}
+                </span>
+              )}
             </label>
             <label>
-              Working directory <span className="optional">optional</span>
-              <input name="workdir" defaultValue={agent?.workdir} placeholder="/home/hermes/projects" />
+              Working directory
+              <input
+                name="workdir"
+                key={transport + localWorkdir}
+                defaultValue={transport === 'local' ? localWorkdir : (agent?.workdir ?? '')}
+                placeholder={transport === 'local' ? 'Auto-detected above' : '/home/hermes/projects'}
+                required={transport === 'local'}
+              />
+              <span className="field-hint">
+                {transport === 'local'
+                  ? 'Hermes will work in this directory. Use an absolute path.'
+                  : 'Leave blank to use the Hermes default.'}
+              </span>
             </label>
             <label>
               Hermes profile <span className="optional">optional</span>
@@ -468,6 +730,24 @@ export function AgentModal({
                 defaultValue={agent?.profile}
                 placeholder="Uses the installation default if empty"
               />
+            </label>
+            <label>
+              Role <span className="optional">optional</span>
+              <input
+                name="role"
+                defaultValue={agent?.role}
+                placeholder="e.g. Engineering, Research, Operations"
+              />
+              <span className="field-hint">Describes what this agent specialises in.</span>
+            </label>
+            <label>
+              Capabilities <span className="optional">optional</span>
+              <TagInput
+                value={capabilities}
+                onChange={setCapabilities}
+                placeholder="e.g. python, testing — press Enter or comma"
+              />
+              <span className="field-hint">Skills used for smart task assignment.</span>
             </label>
           </div>
         </details>
@@ -533,6 +813,9 @@ export function AgentModal({
           </button>
         </footer>
       </form>
+      {showKeyManager && (
+        <SshKeyModal sshKeys={sshKeys} request={request} onClose={() => setShowKeyManager(false)} />
+      )}
     </Modal>
   );
 }
@@ -554,6 +837,8 @@ export function TaskForm({
   const [busy, setBusy] = useState(false);
   const [agentId, setAgentId] = useState('');
   const [runner, setRunner] = useState<Runner>('hermes');
+  const [tags, setTags] = useState<string[]>([]);
+  const [chain, setChain] = useState<string[]>([]);
   const selected = agents.find((agent) => agent.id === agentId);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -568,6 +853,8 @@ export function TaskForm({
         workdir: String(data.get('workdir') ?? '').trim(),
         priority: data.get('priority'),
         status: data.get('status'),
+        tags,
+        chain: chain.length ? chain : undefined,
       });
       onSaved(task);
     } catch (error) {
@@ -599,6 +886,15 @@ export function TaskForm({
           </span>
         </label>
         <label>
+          Required capabilities <span className="optional">optional</span>
+          <TagInput
+            value={tags}
+            onChange={setTags}
+            placeholder="e.g. python, testing — used by auto-assign"
+          />
+          <span className="field-hint">Auto-assign prefers agents whose capabilities match these tags.</span>
+        </label>
+        <label>
           Assign to
           <select name="agentId" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
             <option value="">Unassigned</option>
@@ -609,6 +905,43 @@ export function TaskForm({
             ))}
           </select>
         </label>
+        {agents.length > 1 && (
+          <details className="chain-config">
+            <summary>Sequential agent chain <span className="optional">optional</span></summary>
+            <div className="chain-steps">
+              <span className="field-hint">After the assigned agent finishes, these agents will run the task in order, each receiving the previous agent's output as context.</span>
+              {chain.map((chainAgentId, index) => {
+                const a = agents.find((ag) => ag.id === chainAgentId);
+                return (
+                  <div key={index} className="chain-step">
+                    <span>Step {index + 2}: {a?.name ?? 'Unknown agent'}</span>
+                    <button
+                      type="button"
+                      className="button secondary small"
+                      onClick={() => setChain(chain.filter((_, i) => i !== index))}
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })}
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setChain([...chain, e.target.value]);
+                  e.target.value = '';
+                }}
+              >
+                <option value="">Add agent to chain…</option>
+                {agents
+                  .filter((a) => a.id !== agentId && !chain.includes(a.id))
+                  .map((a) => (
+                    <option key={a.id} value={a.id}>{a.name}</option>
+                  ))}
+              </select>
+            </div>
+          </details>
+        )}
         <RunnerFields agent={selected} runner={runner} onRunner={setRunner} />
         <div className="form-grid">
           <label>

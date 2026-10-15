@@ -16,6 +16,7 @@ import {
   Clock3,
   FileText,
   FolderKanban,
+  Github,
   HelpCircle,
   LayoutGrid,
   List,
@@ -58,9 +59,10 @@ import { AgentModal, BulkModelModal, TaskForm, TrustModal, VaultModal } from './
 import AttentionInbox from './components/Attention';
 import TaskDetail from './components/TaskDetail';
 import { Schedules, Library, Models } from './components/Workspace';
+import GitHub from './components/GitHub';
 
 const TerminalPanel = lazy(() => import('./components/TerminalPanel'));
-type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'models';
+type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'models' | 'github';
 type Dialog =
   | { kind: 'agent'; agent?: Agent }
   | { kind: 'task'; status?: TaskStatus }
@@ -78,15 +80,19 @@ const viewNames: Record<View, string> = {
   documents: 'Documents',
   media: 'Media gallery',
   models: 'Models',
+  github: 'GitHub',
 };
 const blank: AppSnapshot = {
   agents: [],
   tasks: [],
   activity: [],
   schedules: [],
+  sshKeys: [],
   defaults: { model: '', provider: '', tools: {} },
   vault: { configured: false, unlocked: false },
   csrfToken: '',
+  github: { configured: false },
+  githubSyncs: [],
 };
 
 function Logo() {
@@ -359,6 +365,20 @@ export default function App() {
       setToast({ message: (error as Error).message, error: true });
     }
   }
+  async function autoAssign() {
+    try {
+      const result = await request<{ assigned: number }>('/tasks/auto-assign', 'POST', {});
+      setToast({
+        message:
+          result.assigned === 0
+            ? 'No unassigned backlog tasks or no online agents available.'
+            : `Auto-assigned ${result.assigned} task${result.assigned === 1 ? '' : 's'} to available agents.`,
+        error: false,
+      });
+    } catch (error) {
+      setToast({ message: (error as Error).message, error: true });
+    }
+  }
   function switchDemo() {
     setDemo(!demo);
     setSearch('');
@@ -417,6 +437,7 @@ export default function App() {
               { id: 'reports', icon: FileText },
               { id: 'terminal', icon: Terminal },
               { id: 'schedules', icon: Clock3 },
+              { id: 'github', icon: Github },
               { id: 'documents', icon: FileText },
               { id: 'media', icon: LayoutGrid },
               { id: 'models', icon: Settings2 },
@@ -625,6 +646,12 @@ export default function App() {
                   Explore demo
                 </button>
               )}
+              {(view === 'board' || view === 'reports') && !demo && (
+                <button className="button secondary" onClick={() => void autoAssign()}>
+                  <Activity size={15} />
+                  Auto-assign
+                </button>
+              )}
               <button
                 className="button primary"
                 onClick={
@@ -702,7 +729,7 @@ export default function App() {
                           <Avatar agent={agent} needsYou={waitingAgents.has(agent.id)} />
                           <div>
                             <strong>{agent.name}</strong>
-                            <code>{agent.transport === 'local' ? 'This computer' : agent.host}</code>
+                            <code>{agent.role ?? (agent.transport === 'local' ? 'This computer' : agent.host)}</code>
                           </div>
                           <AgentStatus agent={agent} />
                         </div>
@@ -721,7 +748,7 @@ export default function App() {
                               ? `Waiting on you: ${state.tasks.find((t) => t.agentId === agent.id && t.status === 'waiting')?.title}`
                               : (current?.title ??
                                 (agent.status === 'online'
-                                  ? 'Ready for the next task'
+                                  ? 'Waiting for work'
                                   : agent.status === 'offline'
                                     ? `Last seen ${relativeTime(agent.lastSeen).toLowerCase()}`
                                     : 'Waiting for a connection check'))}
@@ -903,16 +930,51 @@ export default function App() {
                             )}
                           </header>
                           <div className="column-cards">
-                            {column.map((task) => (
-                              <TaskCard
-                                key={task.id}
-                                task={task}
-                                agent={state.agents.find((a) => a.id === task.agentId)}
-                                demo={demo}
-                                onOpen={() => setDialog({ kind: 'detail', id: task.id })}
-                                onDrag={setDragged}
-                              />
-                            ))}
+                            {(() => {
+                              const groups = new Map<string, typeof column>();
+                              const ungrouped: typeof column = [];
+                              for (const task of column) {
+                                if (task.groupId) {
+                                  const g = groups.get(task.groupId) ?? [];
+                                  g.push(task);
+                                  groups.set(task.groupId, g);
+                                } else {
+                                  ungrouped.push(task);
+                                }
+                              }
+                              return (
+                                <>
+                                  {ungrouped.map((task) => (
+                                    <TaskCard
+                                      key={task.id}
+                                      task={task}
+                                      agent={state.agents.find((a) => a.id === task.agentId)}
+                                      demo={demo}
+                                      onOpen={() => setDialog({ kind: 'detail', id: task.id })}
+                                      onDrag={setDragged}
+                                    />
+                                  ))}
+                                  {[...groups.entries()].map(([groupId, groupTasks]) => (
+                                    <details key={groupId} className="parallel-group" open>
+                                      <summary>
+                                        <Radio size={13} />
+                                        Parallel run · {groupTasks.length} agents
+                                      </summary>
+                                      {groupTasks.map((task) => (
+                                        <TaskCard
+                                          key={task.id}
+                                          task={task}
+                                          agent={state.agents.find((a) => a.id === task.agentId)}
+                                          demo={demo}
+                                          onOpen={() => setDialog({ kind: 'detail', id: task.id })}
+                                          onDrag={setDragged}
+                                        />
+                                      ))}
+                                    </details>
+                                  ))}
+                                </>
+                              );
+                            })()}
                             {!column.length && (
                               <div className="column-empty">
                                 {status === 'running'
@@ -1349,6 +1411,18 @@ export default function App() {
                 {view === 'models' && (
                   <Models request={request} agents={state.agents} defaults={state.defaults} />
                 )}
+                {view === 'github' && (
+                  <GitHub
+                    request={request}
+                    agents={state.agents}
+                    tasks={state.tasks}
+                    github={state.github}
+                    githubSyncs={state.githubSyncs}
+                    vaultUnlocked={state.vault.unlocked}
+                    onVaultOpen={() => setDialog({ kind: 'vault' })}
+                    demo={demo}
+                  />
+                )}
               </>
             ))}
           {view === 'terminal' && (
@@ -1401,6 +1475,7 @@ export default function App() {
         <AgentModal
           agent={dialog.agent}
           agents={state.agents}
+          sshKeys={state.sshKeys}
           request={request}
           onClose={() => setDialog(null)}
           onSaved={(agent) => {

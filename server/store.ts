@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Activity, Agent, Task, TaskLog } from '../shared/types.ts';
+import type { Activity, Agent, GitHubSync, SshKey, Task, TaskLog } from '../shared/types.ts';
 import type { Sealed, VaultRecord } from './vault.ts';
 
 export const LOG_LIMIT = 2000;
@@ -33,6 +33,7 @@ export class Store {
       );
       CREATE INDEX IF NOT EXISTS logs_task_id ON logs(task_id, id);
       CREATE TABLE IF NOT EXISTS activity (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ssh_keys (id TEXT PRIMARY KEY, data TEXT NOT NULL, key_data TEXT NOT NULL);
       PRAGMA user_version = 1;
       `);
       for (const agent of this.agents()) {
@@ -201,11 +202,54 @@ export class Store {
       .run();
   }
 
+  sshKeys(): SshKey[] {
+    return this.db
+      .prepare('SELECT data FROM ssh_keys ORDER BY rowid')
+      .all()
+      .map((row) => JSON.parse(row.data as string) as SshKey);
+  }
+
+  sshKeySealed(id: string): Sealed | undefined {
+    const row = this.db.prepare('SELECT key_data FROM ssh_keys WHERE id = ?').get(id);
+    return row ? (JSON.parse(row.key_data as string) as Sealed) : undefined;
+  }
+
+  saveSshKey(key: SshKey, sealed: Sealed): void {
+    this.db
+      .prepare('INSERT INTO ssh_keys(id, data, key_data) VALUES (?, ?, ?)')
+      .run(key.id, JSON.stringify(key), JSON.stringify(sealed));
+  }
+
+  deleteSshKey(id: string): void {
+    this.db.prepare('DELETE FROM ssh_keys WHERE id = ?').run(id);
+  }
+
   activity(): Activity[] {
     return this.db
       .prepare('SELECT data FROM activity ORDER BY rowid DESC')
       .all()
       .map((row) => JSON.parse(row.data as string) as Activity);
+  }
+
+  githubTokenSealed(): Sealed | undefined {
+    const raw = this.setting<Sealed | null>('github-pat-sealed', null);
+    return raw ?? undefined;
+  }
+
+  saveGithubToken(sealed: Sealed): void {
+    this.setSetting('github-pat-sealed', sealed);
+  }
+
+  clearGithubToken(): void {
+    this.setSetting('github-pat-sealed', null);
+  }
+
+  githubSyncs(): GitHubSync[] {
+    return this.setting<GitHubSync[]>('github-syncs', []);
+  }
+
+  saveGithubSyncs(syncs: GitHubSync[]): void {
+    this.setSetting('github-syncs', syncs);
   }
 
   close(): void {

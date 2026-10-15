@@ -17,16 +17,19 @@ import {
   type Agent,
   type AppSnapshot,
   type ModelDefaults,
+  type Priority,
   type Runner,
   type ServerEvent,
+  type SshKey,
   type Task,
   type TaskLog,
   type Turn,
 } from '../shared/types.ts';
 import { Store } from './store.ts';
 import { emptyDefaults, workspace, type RemoteBaseline } from './workspace.ts';
+import { githubApi } from './github.ts';
 import { ApiError, Vault, secretRedactor, type Credentials } from './vault.ts';
-import { captureLocal, discoverLocalHermes, discoverLocalTool } from './local.ts';
+import { captureLocal, discoverLocalHermes, discoverLocalTool, discoverLocalWorkdir } from './local.ts';
 import { hermesArgs, connectSSH, execCapture, hermesCommand, quote, runAgent } from './ssh.ts';
 import { needsInput, parseToolDetection, runners, toolDetectionScript } from './runners.ts';
 
@@ -75,11 +78,14 @@ const agentFields = z
       .partial()
       .strict()
       .optional(),
+    role: z.string().max(200).trim().optional(),
+    capabilities: z.array(z.string().max(100).trim()).max(50).optional(),
     credentials: credentialSchema.optional(),
+    sshKeyId: z.string().uuid().optional(),
   })
   .strict();
 /** Fields that only affect future runs; changing them does not require a new connection check. */
-const softAgentFields = new Set(['name', 'model', 'provider', 'color', 'toolModels']);
+const softAgentFields = new Set(['name', 'model', 'provider', 'color', 'toolModels', 'role', 'capabilities']);
 const runnerSchema = z.enum(['hermes', 'claude', 'codex', 'opencode']);
 const agentCreate = agentFields.extend({
   port: agentFields.shape.port.default(22),
@@ -99,6 +105,9 @@ const taskFields = z
     workdir: clean(4096).trim(),
     status: z.enum(['backlog', 'ready', 'waiting', 'review', 'done', 'blocked']),
     priority: z.enum(['low', 'medium', 'high']),
+    tags: z.array(z.string().max(100).trim()).max(50).optional(),
+    groupId: z.string().uuid().optional(),
+    chain: z.array(z.string().uuid()).max(10).optional(),
   })
   .strict();
 const taskCreate = taskFields.extend({
@@ -108,6 +117,8 @@ const taskCreate = taskFields.extend({
   workdir: taskFields.shape.workdir.default(''),
   status: taskFields.shape.status.default('backlog'),
   priority: taskFields.shape.priority.default('medium'),
+  tags: taskFields.shape.tags.default([]),
+  chain: taskFields.shape.chain.default([]),
 });
 const MAX_TURNS = 20;
 const addTurn = (turns: Turn[] | undefined, role: Turn['role'], text: string): Turn[] =>
@@ -170,16 +181,28 @@ export function createManager(options: ManagerOptions = {}) {
   // Agents created before colours existed get stable, distinct ones.
   for (const agent of store.agents())
     if (!agent.color) store.saveAgent({ ...agent, color: nextColor(store.agents()) });
+  // Reset any tasks that were running when the manager last shut down.
+  for (const task of store.tasks().filter((t) => t.status === 'running')) {
+    store.saveTask({
+      ...task,
+      status: 'blocked',
+      error: 'Interrupted: manager restarted while this task was running.',
+      updatedAt: new Date().toISOString(),
+    });
+  }
   const snapshot = (): AppSnapshot => ({
     agents: store
       .agents()
       .map((agent) => (pendingHostKeys.has(agent.id) ? { ...agent, hostKeyPending: true } : agent)),
     tasks: store.tasks(),
     schedules: store.setting('schedules', []),
+    sshKeys: store.sshKeys(),
     defaults: defaults(),
     vault: vault.state,
     activity: store.activity(),
     csrfToken,
+    github: { configured: !!store.githubTokenSealed() },
+    githubSyncs: store.githubSyncs(),
   });
   const send = (ws: WebSocket, value: unknown) => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -479,6 +502,13 @@ export function createManager(options: ManagerOptions = {}) {
           ? `Task "${task.title}" needs your input.`
           : `Task "${task.title}" moved to ${updated.status}.`,
       );
+      if (!waiting && outcome.success && updated.chain?.length) {
+        try {
+          advanceChain(updated);
+        } catch {
+          /* Chain advance errors are non-fatal — task stays in review. */
+        }
+      }
     } catch (error) {
       const message =
         error instanceof ApiError
@@ -513,6 +543,11 @@ export function createManager(options: ManagerOptions = {}) {
       operation.controller.abort();
       operations.delete(agent.id);
       changed();
+      try {
+        dispatchNext(agent.id);
+      } catch {
+        /* Queue dispatch errors must not surface to the task. */
+      }
     }
   }
 
@@ -594,25 +629,32 @@ export function createManager(options: ManagerOptions = {}) {
   });
 
   app.get('/api/local-hermes', (_req, res) => {
-    res.json({ hermesPath: discoverLocalHermes() ?? null });
+    res.json({ hermesPath: discoverLocalHermes() ?? null, workdir: discoverLocalWorkdir() });
   });
 
   app.post('/api/agents', (req, res) => {
     vault.requireUnlocked();
     if (store.agents().length >= 100) throw new ApiError(409, 'Agent limit reached (100).');
-    const { credentials, ...input } = agentCreate.parse(req.body);
+    const { credentials, sshKeyId, ...input } = agentCreate.parse(req.body);
     const id = randomUUID();
     if (
       input.transport === 'local' &&
       (!isAbsolute(input.hermesPath) || (input.workdir && !isAbsolute(input.workdir)))
     )
       throw new ApiError(400, 'Local executable and working directory must be absolute paths.');
-    if (input.transport === 'local' && credentials)
+    if (input.transport === 'local' && (credentials || sshKeyId))
       throw new ApiError(400, 'Local agents do not use SSH credentials.');
-    const encrypted = vault.encrypt(
-      id,
-      input.transport === 'local' ? {} : validateCredentials(input.authType, credentials),
-    );
+    let resolvedCredentials;
+    if (input.transport !== 'local' && sshKeyId) {
+      if (input.authType !== 'privateKey')
+        throw new ApiError(400, 'SSH keys can only be used with private-key authentication.');
+      const sealed = store.sshKeySealed(sshKeyId);
+      if (!sealed) throw new ApiError(404, 'SSH key not found.');
+      resolvedCredentials = vault.decryptSshKey(sshKeyId, sealed);
+    } else {
+      resolvedCredentials = input.transport === 'local' ? {} : validateCredentials(input.authType, credentials);
+    }
+    const encrypted = vault.encrypt(id, resolvedCredentials);
     const agent: Agent = {
       ...input,
       color: input.color ?? nextColor(store.agents()),
@@ -652,8 +694,8 @@ export function createManager(options: ManagerOptions = {}) {
   app.patch('/api/agents/:id', (req, res) => {
     vault.requireUnlocked();
     const agent = getAgent(req.params.id);
-    const { credentials, ...input } = agentFields.partial().parse(req.body);
-    const soft = credentials === undefined && Object.keys(input).every((key) => softAgentFields.has(key));
+    const { credentials, sshKeyId, ...input } = agentFields.partial().parse(req.body);
+    const soft = credentials === undefined && !sshKeyId && Object.keys(input).every((key) => softAgentFields.has(key));
     if (soft) {
       // Model, name, and colour changes apply to the next run; the agent stays checked and may stay busy.
       const updated: Agent = { ...agent, ...input };
@@ -666,7 +708,7 @@ export function createManager(options: ManagerOptions = {}) {
     idle(agent.id);
     if (input.transport && input.transport !== (agent.transport ?? 'ssh'))
       throw new ApiError(400, 'Add a new agent to change connection type.');
-    if (agent.transport === 'local' && credentials)
+    if (agent.transport === 'local' && (credentials || sshKeyId))
       throw new ApiError(400, 'Local agents do not use SSH credentials.');
     if (
       agent.transport === 'local' &&
@@ -681,10 +723,16 @@ export function createManager(options: ManagerOptions = {}) {
       lastError: undefined,
       version: undefined,
     };
-    const encrypted =
-      credentials === undefined
-        ? undefined
-        : vault.encrypt(agent.id, validateCredentials(updated.authType, credentials));
+    let encrypted;
+    if (sshKeyId) {
+      if ((input.authType ?? agent.authType) !== 'privateKey')
+        throw new ApiError(400, 'SSH keys can only be used with private-key authentication.');
+      const sealed = store.sshKeySealed(sshKeyId);
+      if (!sealed) throw new ApiError(404, 'SSH key not found.');
+      encrypted = vault.encrypt(agent.id, vault.decryptSshKey(sshKeyId, sealed));
+    } else if (credentials !== undefined) {
+      encrypted = vault.encrypt(agent.id, validateCredentials(updated.authType, credentials));
+    }
     if (updated.authType !== agent.authType && !encrypted)
       throw new ApiError(400, 'New credentials are required when changing authentication type.');
     if (updated.host !== agent.host || updated.port !== agent.port) {
@@ -712,6 +760,47 @@ export function createManager(options: ManagerOptions = {}) {
     const agent = getAgent(req.params.id);
     const operation = reserve(agent, 'probe');
     res.json(await track(probe(agent, operation)));
+  });
+
+  app.post('/api/agents/:id/detect-hermes', async (req, res) => {
+    const agent = getAgent(req.params.id);
+    if (agent.transport === 'local')
+      throw new ApiError(400, 'Path detection is only available for SSH agents.');
+    const operation = reserve(agent, 'probe');
+    try {
+      trusted(agent);
+      const credentials = credentialsFor(agent);
+      const client = await connectSSH(agent, credentials, observe(agent), operation.controller.signal);
+      // Use a login shell so .profile/.bash_profile is sourced, then fall back to common dirs and a find.
+      const script = [
+        'p=$(bash -l -c "command -v hermes 2>/dev/null" 2>/dev/null)',
+        '[ -n "$p" ] && echo "$p" && exit 0',
+        'for d in "$HOME/.local/bin" "$HOME/.hermes/hermes-agent/.hermes/bin" "$HOME/.hermes/bin" "$HOME/hermes/.venv/bin" /usr/local/bin /opt/homebrew/bin /usr/bin /snap/bin; do',
+        '  [ -x "$d/hermes" ] && echo "$d/hermes" && exit 0',
+        'done',
+        'find "$HOME" /usr/local /opt -maxdepth 6 -name hermes -type f -perm -u+x 2>/dev/null | head -1',
+        'exit 0',
+      ].join('; ');
+      const output = await execCapture(client, `sh -c ${quote(script)}`, operation.controller.signal).catch(
+        () => '',
+      );
+      client.destroy();
+      const hermesPath = output.trim().split('\n')[0]?.trim();
+      if (!hermesPath)
+        throw new ApiError(
+          404,
+          'Hermes was not found. Try running `which hermes` on the remote host and paste the path into the Hermes executable field.',
+        );
+      const updated: Agent = { ...agent, hermesPath, status: 'unknown', lastError: undefined, version: undefined };
+      store.saveAgent(updated);
+      store.setCapability(agent.id, false);
+      changed();
+      res.json({ hermesPath, agent: updated });
+    } finally {
+      operation.controller.abort();
+      operations.delete(agent.id);
+      changed();
+    }
   });
   app.post('/api/agents/:id/trust', (req, res) => {
     vault.requireUnlocked();
@@ -755,6 +844,46 @@ export function createManager(options: ManagerOptions = {}) {
     changed();
     res.status(201).json(task);
   });
+  app.post('/api/tasks/auto-assign', (req, res) => {
+    const unassigned = store.tasks().filter((t) => !t.agentId && t.status === 'backlog');
+    const available = store.agents().filter((a) => a.status === 'online');
+    if (!unassigned.length || !available.length) {
+      res.json({ assigned: 0 });
+      return;
+    }
+    unassigned.sort(
+      (a, b) =>
+        priorityScore(b.priority) - priorityScore(a.priority) || a.createdAt.localeCompare(b.createdAt),
+    );
+    const load = new Map(available.map((a) => [a.id, 0]));
+    let assigned = 0;
+    for (const task of unassigned) {
+      const scored = available
+        .map((a) => ({ a, score: scoreAgent(a, task), load: load.get(a.id) ?? 0 }))
+        .sort((x, y) => y.score - x.score || x.load - y.load);
+      if (!scored.length) continue;
+      const best = scored[0].a;
+      const now = new Date().toISOString();
+      const updated: Task = { ...task, agentId: best.id, status: 'ready', updatedAt: now };
+      store.saveTask(updated);
+      load.set(best.id, (load.get(best.id) ?? 0) + 1);
+      assigned++;
+    }
+    if (assigned) {
+      store.addActivity('task', `Auto-assigned ${assigned} task${assigned === 1 ? '' : 's'} to available agents.`);
+      changed();
+      for (const agentId of load.keys()) {
+        if ((load.get(agentId) ?? 0) > 0) {
+          try {
+            dispatchNext(agentId);
+          } catch {
+            /* Dispatch errors are non-fatal. */
+          }
+        }
+      }
+    }
+    res.json({ assigned });
+  });
   app.patch('/api/tasks/:id', (req, res) => {
     const task = getTask(req.params.id);
     if (task.status === 'running') throw new ApiError(409, 'Running tasks cannot be edited.', 'TASK_RUNNING');
@@ -765,6 +894,13 @@ export function createManager(options: ManagerOptions = {}) {
     if (input.status && input.status !== 'waiting') updated.waitingReason = undefined;
     store.saveTask(updated);
     changed();
+    if (updated.status === 'ready' && updated.agentId) {
+      try {
+        dispatchNext(updated.agentId);
+      } catch {
+        /* Dispatch errors are non-fatal for the save. */
+      }
+    }
     res.json(updated);
   });
   app.delete('/api/tasks/:id', (req, res) => {
@@ -832,6 +968,48 @@ export function createManager(options: ManagerOptions = {}) {
     void track(executeTask(agent, running, operation, plan));
     return running;
   }
+  function priorityScore(p: Priority): number {
+    return p === 'high' ? 2 : p === 'medium' ? 1 : 0;
+  }
+  function scoreAgent(agent: Agent, task: Task): number {
+    if (!task.tags?.length) return 1;
+    const caps = new Set(agent.capabilities ?? []);
+    const matches = task.tags.filter((t) => caps.has(t)).length;
+    return matches / task.tags.length;
+  }
+  function dispatchNext(agentId: string): void {
+    const agent = store.agent(agentId);
+    if (!agent || agent.status === 'busy') return;
+    const next = store
+      .tasks()
+      .filter((t) => t.agentId === agentId && t.status === 'ready')
+      .sort(
+        (a, b) =>
+          priorityScore(b.priority) - priorityScore(a.priority) || a.updatedAt.localeCompare(b.updatedAt),
+      )[0];
+    if (next) launchTask(next);
+  }
+  function advanceChain(task: Task): void {
+    if (!task.chain?.length) return;
+    if (task.chainTrigger === 'on-output' && !task.report) return;
+    const [nextAgentId, ...remainingChain] = task.chain;
+    getAgent(nextAgentId); // throws if not found
+    const chainStep = (task.chainStep ?? 1) + 1;
+    const chained: Task = {
+      ...task,
+      agentId: nextAgentId,
+      chain: remainingChain,
+      chainStep,
+      status: 'ready',
+      updatedAt: new Date().toISOString(),
+    };
+    store.saveTask(chained);
+    store.addActivity('task', `Task "${task.title}" advancing to step ${chainStep} on "${getAgent(nextAgentId).name}".`);
+    const context = task.report
+      ? `Step ${chainStep}: Review the previous agent's work and continue.\n\nPrevious output:\n${task.report}`
+      : `Step ${chainStep}: Continue this task.\n\n${task.description || task.title}`;
+    launchTask(chained, { message: context });
+  }
   app.post('/api/tasks/:id/run', (req, res) => res.status(202).json(launchTask(getTask(req.params.id))));
   app.post('/api/tasks/:id/reply', (req, res) => {
     const task = getTask(req.params.id);
@@ -849,6 +1027,96 @@ export function createManager(options: ManagerOptions = {}) {
     if (!task.startedAt) throw new ApiError(409, 'Run the task before replying to it.');
     res.status(202).json(launchTask(task, { message, resume: task.sessionId }));
   });
+  app.post('/api/tasks/:id/abort', (req, res) => {
+    const task = getTask(req.params.id);
+    const now = new Date().toISOString();
+    const operation = task.agentId ? operations.get(task.agentId) : undefined;
+    if (operation) {
+      operation.controller.abort();
+      if (task.agentId) operations.delete(task.agentId);
+    }
+    const aborted: Task = { ...task, status: 'blocked', error: 'Aborted by user.', updatedAt: now };
+    store.saveTask(aborted);
+    if (task.agentId) {
+      const agent = store.agent(task.agentId);
+      if (agent) store.saveAgent({ ...agent, status: 'unknown' });
+    }
+    store.addActivity('task', `Task "${task.title}" was force-stopped.`);
+    changed();
+    res.json(aborted);
+  });
+  app.post('/api/tasks/:id/broadcast', (req, res) => {
+    const source = getTask(req.params.id);
+    const { agentIds, grouped } = z
+      .object({ agentIds: z.array(z.string().uuid()).min(1).max(20), grouped: z.boolean().default(false) })
+      .strict()
+      .parse(req.body);
+    const agents = agentIds.map((id) => getAgent(id));
+    const groupId = grouped ? randomUUID() : undefined;
+    const now = new Date().toISOString();
+    const created = agents.map((agent) => {
+      const task: Task = {
+        title: source.title,
+        description: source.description,
+        priority: source.priority,
+        tags: source.tags,
+        runner: source.runner,
+        workdir: source.workdir,
+        id: randomUUID(),
+        agentId: agent.id,
+        status: 'ready',
+        createdAt: now,
+        updatedAt: now,
+        groupId,
+      };
+      store.saveTask(task);
+      return task;
+    });
+    store.addActivity(
+      'task',
+      `"${source.title}" broadcast to ${agents.map((a) => a.name).join(', ')}.`,
+    );
+    changed();
+    for (const task of created) {
+      try { dispatchNext(task.agentId!); } catch { /* non-fatal */ }
+    }
+    res.status(201).json({ tasks: created });
+  });
+  app.post('/api/tasks/:id/handoff', (req, res) => {
+    const source = getTask(req.params.id);
+    const { agentId, instruction } = z
+      .object({
+        agentId: z.string().uuid(),
+        instruction: z.string().max(4096).trim().optional(),
+      })
+      .strict()
+      .parse(req.body);
+    const targetAgent = getAgent(agentId);
+    const sourceAgent = source.agentId ? store.agent(source.agentId) : undefined;
+    const previousContext = source.report
+      ? `\n\n---\nPrevious work by ${sourceAgent?.name ?? 'previous agent'}:\n${source.report}`
+      : '';
+    const handoffDesc = `${source.description || source.title}${previousContext}${instruction ? `\n\n---\nHandoff instructions:\n${instruction}` : ''}`;
+    const now = new Date().toISOString();
+    const task: Task = {
+      title: `${source.title} — continued`,
+      description: handoffDesc,
+      agentId,
+      status: 'ready',
+      priority: source.priority,
+      tags: source.tags,
+      runner: source.runner,
+      workdir: source.workdir,
+      id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.saveTask(task);
+    store.addActivity('task', `"${source.title}" handed off to "${targetAgent.name}".`);
+    changed();
+    try { dispatchNext(agentId); } catch { /* non-fatal */ }
+    res.status(201).json(task);
+  });
   const workspaceService = workspace(
     app,
     store,
@@ -857,6 +1125,38 @@ export function createManager(options: ManagerOptions = {}) {
     (task) => launchTask(task),
     changed,
   );
+  githubApi(app, store, vault, changed);
+
+  app.post('/api/ssh-keys', (req, res) => {
+    vault.requireUnlocked();
+    if (store.sshKeys().length >= 50) throw new ApiError(409, 'SSH key limit reached (50).');
+    const { name, privateKey, passphrase } = z
+      .object({
+        name: clean(100).trim().min(1),
+        privateKey: z.string().min(1).max(64 * 1024),
+        passphrase: z.string().max(4096).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    const id = randomUUID();
+    const sealed = vault.encryptSshKey(id, { privateKey, ...(passphrase ? { passphrase } : {}) });
+    const key: SshKey = { id, name, createdAt: new Date().toISOString() };
+    store.saveSshKey(key, sealed);
+    store.addActivity('system', `SSH key "${name}" saved to vault.`);
+    changed();
+    res.status(201).json(key);
+  });
+
+  app.delete('/api/ssh-keys/:id', (req, res) => {
+    vault.requireUnlocked();
+    const sealed = store.sshKeySealed(req.params.id);
+    if (!sealed) throw new ApiError(404, 'SSH key not found.');
+    const key = store.sshKeys().find((k) => k.id === req.params.id);
+    store.deleteSshKey(req.params.id);
+    store.addActivity('system', `SSH key "${key?.name ?? req.params.id}" deleted from vault.`);
+    changed();
+    res.json(snapshot());
+  });
 
   app.use('/api', (_req, _res, next) => next(new ApiError(404, 'API route not found.')));
   const staticDir = resolve(options.staticDir ?? 'dist');

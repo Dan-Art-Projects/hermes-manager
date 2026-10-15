@@ -1,13 +1,16 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
+  ArrowRight,
   Bell,
   Check,
   Download,
   FileText,
   Play,
+  Radio,
   Save,
   Send,
+  StopCircle,
   Terminal,
   Trash2,
 } from 'lucide-react';
@@ -43,6 +46,12 @@ export default function TaskDetail({
   const [reply, setReply] = useState('');
   const [agentId, setAgentId] = useState(task.agentId ?? '');
   const [runner, setRunner] = useState<Runner>(task.runner ?? 'hermes');
+  const [showBroadcast, setShowBroadcast] = useState(false);
+  const [broadcastAgentIds, setBroadcastAgentIds] = useState<string[]>([]);
+  const [groupedBroadcast, setGroupedBroadcast] = useState(false);
+  const [showHandoff, setShowHandoff] = useState(false);
+  const [handoffAgentId, setHandoffAgentId] = useState('');
+  const [handoffInstruction, setHandoffInstruction] = useState('');
   const running = task.status === 'running';
   const agent = agents.find((a) => a.id === task.agentId);
   const runnerName = runnerNames[task.runner ?? 'hermes'];
@@ -147,6 +156,49 @@ export default function TaskDetail({
     anchor.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+  function forceStop() {
+    if (!confirm('Force-stop this task? It will move to blocked. Any work already done by the agent may still be in progress on the remote host.'))
+      return;
+    void action(`/tasks/${task.id}/abort`, 'POST', undefined, () => setNotice('Task force-stopped.'));
+  }
+  async function broadcast() {
+    if (!broadcastAgentIds.length) return;
+    setBusy(true);
+    setError('');
+    try {
+      const result = await request<{ tasks: Task[] }>(`/tasks/${task.id}/broadcast`, 'POST', {
+        agentIds: broadcastAgentIds,
+        grouped: groupedBroadcast,
+      });
+      setNotice(`Broadcast to ${result.tasks.length} agent${result.tasks.length === 1 ? '' : 's'}.`);
+      setShowBroadcast(false);
+      setBroadcastAgentIds([]);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function handoff() {
+    if (!handoffAgentId) return;
+    setBusy(true);
+    setError('');
+    try {
+      await request(`/tasks/${task.id}/handoff`, 'POST', {
+        agentId: handoffAgentId,
+        instruction: handoffInstruction || undefined,
+      });
+      const target = agents.find((a) => a.id === handoffAgentId);
+      setNotice(`Handed off to ${target?.name ?? 'agent'}.`);
+      setShowHandoff(false);
+      setHandoffAgentId('');
+      setHandoffInstruction('');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   const resumable = !!task.sessionId && ((task.runner ?? 'hermes') !== 'hermes' || !!agent?.resume);
   const replyForm = canReply && (
     <form className="reply-box" onSubmit={sendReply}>
@@ -201,6 +253,19 @@ export default function TaskDetail({
           {task.priority} priority
         </span>
         {task.sessionId && <code title={task.sessionId}>Session {task.sessionId.slice(0, 12)}</code>}
+        {(task.chainStep || task.chain?.length) ? (
+          <span className="runner-chip chain-chip" title="This task is part of a sequential agent chain">
+            <ArrowRight size={12} />
+            {task.chainStep ? `Step ${task.chainStep}` : 'Chained'}
+            {task.chain?.length ? ` — ${task.chain.length} more` : ''}
+          </span>
+        ) : null}
+        {task.groupId && (
+          <span className="runner-chip" title="Part of a parallel broadcast group">
+            <Radio size={12} />
+            Parallel run
+          </span>
+        )}
       </div>
       <div className="detail-tabs" role="tablist" aria-label="Task information">
         {(['details', 'output', 'report'] as const).map((value, index, values) => (
@@ -418,6 +483,84 @@ export default function TaskDetail({
           </div>
         )}
       </div>
+      {showBroadcast && !demo && (
+        <div className="collab-panel">
+          <strong>Broadcast to agents</strong>
+          <p className="field-hint">Creates a copy of this task for each selected agent, ready to run.</p>
+          <div className="broadcast-agents">
+            {agents.filter((a) => a.id !== task.agentId).map((a) => (
+              <label key={a.id} className="broadcast-agent-check">
+                <input
+                  type="checkbox"
+                  checked={broadcastAgentIds.includes(a.id)}
+                  onChange={(e) =>
+                    setBroadcastAgentIds(
+                      e.target.checked
+                        ? [...broadcastAgentIds, a.id]
+                        : broadcastAgentIds.filter((id) => id !== a.id),
+                    )
+                  }
+                />
+                {a.name}
+                {a.role && <span className="muted"> — {a.role}</span>}
+              </label>
+            ))}
+          </div>
+          <label className="broadcast-grouped">
+            <input type="checkbox" checked={groupedBroadcast} onChange={(e) => setGroupedBroadcast(e.target.checked)} />
+            Link as parallel group (shows grouped in board)
+          </label>
+          <div className="inline-buttons">
+            <button className="button secondary" type="button" onClick={() => setShowBroadcast(false)}>Cancel</button>
+            <button
+              className="button primary"
+              type="button"
+              disabled={busy || !broadcastAgentIds.length}
+              onClick={() => void broadcast()}
+            >
+              <Radio size={14} />
+              Broadcast to {broadcastAgentIds.length || '…'} agent{broadcastAgentIds.length === 1 ? '' : 's'}
+            </button>
+          </div>
+        </div>
+      )}
+      {showHandoff && !demo && (
+        <div className="collab-panel">
+          <strong>Pass to another agent</strong>
+          <p className="field-hint">Creates a follow-up task with the current report as context.</p>
+          <label>
+            Agent
+            <select value={handoffAgentId} onChange={(e) => setHandoffAgentId(e.target.value)}>
+              <option value="">Choose an agent…</option>
+              {agents.filter((a) => a.id !== task.agentId).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}{a.role ? ` (${a.role})` : ''}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Handoff instructions <span className="optional">optional</span>
+            <textarea
+              rows={2}
+              maxLength={4096}
+              placeholder="e.g. Review the above and focus on security risks…"
+              value={handoffInstruction}
+              onChange={(e) => setHandoffInstruction(e.target.value)}
+            />
+          </label>
+          <div className="inline-buttons">
+            <button className="button secondary" type="button" onClick={() => setShowHandoff(false)}>Cancel</button>
+            <button
+              className="button primary"
+              type="button"
+              disabled={busy || !handoffAgentId}
+              onClick={() => void handoff()}
+            >
+              <ArrowRight size={14} />
+              Hand off
+            </button>
+          </div>
+        </div>
+      )}
       {(error || notice) && (
         <p
           className={error ? 'form-error detail-message' : 'success-message detail-message'}
@@ -435,6 +578,32 @@ export default function TaskDetail({
               : 'You stay in control of execution.'}
         </span>
         <div className="inline-buttons">
+          {running && !demo && (
+            <button className="button danger-text" disabled={busy} onClick={forceStop}>
+              <StopCircle size={15} />
+              Force stop
+            </button>
+          )}
+          {!running && !demo && (
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => { setShowHandoff(!showHandoff); setShowBroadcast(false); }}
+            >
+              <ArrowRight size={15} />
+              Pass to agent
+            </button>
+          )}
+          {!running && !demo && (
+            <button
+              className="button secondary"
+              disabled={busy}
+              onClick={() => { setShowBroadcast(!showBroadcast); setShowHandoff(false); }}
+            >
+              <Radio size={15} />
+              Broadcast
+            </button>
+          )}
           {(task.status === 'review' || task.status === 'waiting') && (
             <button
               className="button secondary"

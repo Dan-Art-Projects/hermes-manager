@@ -51,12 +51,13 @@ export const demoState: AppSnapshot = {
   csrfToken: '',
   vault: { configured: false, unlocked: false },
   schedules: [],
+  sshKeys: [],
   defaults: { model: '', provider: '', tools: {} },
   agents: [
-    agent('atlas', 'Atlas', '192.168.1.21', 'busy', 'engineering', 'jade'),
-    agent('sage', 'Sage', '192.168.1.22', 'online', 'research', 'sky'),
-    agent('nova', 'Nova', '192.168.1.23', 'busy', 'operations', 'amber'),
-    agent('echo', 'Echo', '192.168.1.24', 'offline', 'general', 'rose'),
+    { ...agent('atlas', 'Atlas', '192.168.1.21', 'busy', 'engineering', 'jade'), role: 'Engineering', capabilities: ['python', 'testing', 'security'] },
+    { ...agent('sage', 'Sage', '192.168.1.22', 'online', 'research', 'sky'), role: 'Research', capabilities: ['writing', 'analysis'] },
+    { ...agent('nova', 'Nova', '192.168.1.23', 'busy', 'operations', 'amber'), role: 'Operations', capabilities: ['infrastructure', 'python'] },
+    { ...agent('echo', 'Echo', '192.168.1.24', 'offline', 'general', 'rose'), role: 'General', capabilities: [] },
   ],
   tasks: [
     task(
@@ -153,4 +154,6 @@ export const demoState: AppSnapshot = {
     { id: 'a2', message: 'Atlas started "Review authentication changes".', kind: 'task', createdAt: ago(8) },
     { id: 'a3', message: 'Sage submitted a report for review.', kind: 'task', createdAt: ago(21) },
   ],
+  github: { configured: false },
+  githubSyncs: [],
 };

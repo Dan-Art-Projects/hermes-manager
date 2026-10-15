@@ -56,6 +56,8 @@ export interface Agent {
   toolPaths?: Partial<Record<CodingTool, string>>;
   /** Per-agent coding CLI model overrides; empty entries follow the global default. */
   toolModels?: Partial<Record<CodingTool, string>>;
+  role?: string;
+  capabilities?: string[];
   status: AgentStatus;
   lastSeen?: string;
   lastError?: string;
@@ -90,7 +92,24 @@ export interface Task {
   exitCode?: number;
   error?: string;
   waitingReason?: string;
+  tags?: string[];
+  /** Links tasks that were broadcast together as a parallel group. */
+  groupId?: string;
+  /** Remaining agentIds to run sequentially after the current agent finishes. */
+  chain?: string[];
+  /** 1-based index of the current step in a sequential chain. */
+  chainStep?: number;
+  /** GitHub URL of the source issue/PR/project item; used for deduplication on re-sync. */
+  githubRef?: string;
+  /** Controls whether a schedule chain step fires always or only when the task produced output. */
+  chainTrigger?: 'always' | 'on-output';
   turns?: Turn[];
+}
+
+export interface ScheduleChainStep {
+  agentId: string;
+  instruction?: string;
+  trigger: 'always' | 'on-output';
 }
 
 export interface Schedule {
@@ -104,6 +123,73 @@ export interface Schedule {
   enabled: boolean;
   lastTaskId?: string;
   lastError?: string;
+  chain?: ScheduleChainStep[];
+}
+
+export interface GitHubRepo {
+  id: number;
+  fullName: string;
+  name: string;
+  owner: string;
+  description: string | null;
+  url: string;
+  private: boolean;
+  openIssuesCount: number;
+  language: string | null;
+  updatedAt: string;
+}
+
+export interface GitHubIssue {
+  number: number;
+  title: string;
+  body: string | null;
+  state: 'open' | 'closed';
+  url: string;
+  labels: string[];
+  createdAt: string;
+  updatedAt: string;
+  isPullRequest: boolean;
+}
+
+export interface GitHubProjectV2 {
+  id: string;
+  number: number;
+  title: string;
+  url: string;
+  closed: boolean;
+  owner: string;
+}
+
+export interface GitHubProjectItem {
+  id: string;
+  title: string;
+  body?: string;
+  status?: string;
+  url?: string;
+  number?: number;
+}
+
+export interface GitHubSync {
+  id: string;
+  name: string;
+  repoFullName?: string;
+  projectNodeId?: string;
+  type: 'issues' | 'prs' | 'project';
+  agentId: string;
+  runner?: Runner;
+  enabled: boolean;
+  intervalMinutes: number;
+  nextRun: string;
+  lastSyncedAt?: string;
+  lastError?: string;
+  labelFilter?: string[];
+  stateFilter?: 'open' | 'closed' | 'all';
+}
+
+export interface SshKey {
+  id: string;
+  name: string;
+  createdAt: string;
 }
 
 export interface Artifact {
@@ -149,10 +235,13 @@ export interface AppSnapshot {
   agents: Agent[];
   tasks: Task[];
   schedules: Schedule[];
+  sshKeys: SshKey[];
   defaults: ModelDefaults;
   vault: { configured: boolean; unlocked: boolean };
   activity: Activity[];
   csrfToken: string;
+  github: { configured: boolean };
+  githubSyncs: GitHubSync[];
 }
 
 export interface AgentInput {
@@ -168,9 +257,12 @@ export interface AgentInput {
   hermesPath: string;
   workdir: string;
   profile: string;
+  role?: string;
+  capabilities?: string[];
   toolPaths?: Partial<Record<CodingTool, string>>;
   toolModels?: Partial<Record<CodingTool, string>>;
   credentials?: { password?: string; privateKey?: string; passphrase?: string };
+  sshKeyId?: string;
 }
 
 export type ServerEvent = { type: 'state'; data: AppSnapshot } | { type: 'log'; data: TaskLog };

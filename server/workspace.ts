@@ -48,6 +48,11 @@ const formats: Record<string, [Artifact['kind'], string]> = {
   '.pptx': ['document', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
 };
 const runner = z.enum(['hermes', 'claude', 'codex', 'opencode']);
+const scheduleChainStep = z.object({
+  agentId: z.string().uuid(),
+  instruction: z.string().max(4096).optional(),
+  trigger: z.enum(['always', 'on-output']).default('always'),
+});
 const scheduleInput = z
   .object({
     title: z.string().trim().min(1).max(200),
@@ -57,6 +62,7 @@ const scheduleInput = z
     nextRun: z.string().datetime(),
     intervalMinutes: z.number().int().min(0).max(525600),
     enabled: z.boolean(),
+    chain: z.array(scheduleChainStep).max(10).optional(),
   })
   .strict();
 const modelName = z
@@ -347,6 +353,8 @@ export function workspace(
       if (!item.enabled || Date.parse(item.nextRun) > Date.now()) continue;
       if (store.tasks().some((t) => t.scheduleId === item.id && t.status === 'running')) continue;
       const now = new Date().toISOString();
+      const chainAgentIds = item.chain?.map((s) => s.agentId) ?? [];
+      const chainTrigger = item.chain?.some((s) => s.trigger === 'on-output') ? 'on-output' as const : 'always' as const;
       const task: Task = {
         id: randomUUID(),
         title: item.title,
@@ -358,6 +366,7 @@ export function workspace(
         priority: 'medium',
         createdAt: now,
         updatedAt: now,
+        ...(chainAgentIds.length ? { chain: chainAgentIds, chainStep: 1, chainTrigger } : {}),
       };
       // Persist the claim before execution. A crash never retries an uncertain occurrence.
       const previous = { ...item };

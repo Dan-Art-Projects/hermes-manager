@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Plus, X } from 'lucide-react';
 import {
   codingTools,
   runnerNames,
@@ -8,6 +9,7 @@ import {
   type ModelDefaults,
   type Runner,
   type Schedule,
+  type ScheduleChainStep,
   type Task,
 } from '../../shared/types';
 import { agentStyle, type Request } from '../api';
@@ -82,10 +84,12 @@ export function Schedules({
     [edit, setEdit] = useState<Schedule | null>(null),
     [removing, setRemoving] = useState<Schedule | null>(null),
     [agentId, setAgentId] = useState(''),
-    [runner, setRunner] = useState<Runner>('hermes');
+    [runner, setRunner] = useState<Runner>('hermes'),
+    [chain, setChain] = useState<ScheduleChainStep[]>([]);
   useEffect(() => {
     setAgentId(edit?.agentId ?? '');
     setRunner(edit?.runner ?? 'hermes');
+    setChain(edit?.chain ?? []);
   }, [edit]);
   async function save(form: HTMLFormElement) {
     setBusy(true);
@@ -100,11 +104,13 @@ export function Schedules({
         nextRun: new Date(String(data.get('nextRun'))).toISOString(),
         intervalMinutes: Number(data.get('intervalMinutes')),
         enabled: data.get('enabled') === 'on',
+        chain: chain.length ? chain : undefined,
       });
       setEdit(null);
       form.reset();
       setAgentId('');
       setRunner('hermes');
+      setChain([]);
     } catch (e) {
       setError(message(e));
     } finally {
@@ -196,6 +202,58 @@ export function Schedules({
           <input type="checkbox" name="enabled" defaultChecked={edit ? edit.enabled : true} />
           Enabled
         </label>
+        <details className="chain-config">
+          <summary>Downstream agents ({chain.length})</summary>
+          <p className="field-hint">After this schedule completes, automatically create tasks for additional agents.</p>
+          <div className="chain-steps">
+            {chain.map((step, i) => {
+              const stepAgent = agents.find((a) => a.id === step.agentId);
+              return (
+                <div key={i} className="chain-step">
+                  <span className="chain-step-num">{i + 1}</span>
+                  <select
+                    className="field"
+                    value={step.agentId}
+                    onChange={(e) => setChain(chain.map((s, j) => j === i ? { ...s, agentId: e.target.value } : s))}
+                  >
+                    <option value="">— Select agent —</option>
+                    {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                  </select>
+                  <select
+                    className="field"
+                    value={step.trigger}
+                    onChange={(e) => setChain(chain.map((s, j) => j === i ? { ...s, trigger: e.target.value as ScheduleChainStep['trigger'] } : s))}
+                    title="When to trigger this step"
+                  >
+                    <option value="always">Always</option>
+                    <option value="on-output">Only if previous produced output</option>
+                  </select>
+                  <input
+                    className="field"
+                    placeholder="Optional instruction override"
+                    value={step.instruction ?? ''}
+                    onChange={(e) => setChain(chain.map((s, j) => j === i ? { ...s, instruction: e.target.value || undefined } : s))}
+                  />
+                  <button
+                    type="button"
+                    className="button ghost"
+                    onClick={() => setChain(chain.filter((_, j) => j !== i))}
+                    aria-label="Remove step"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => setChain([...chain, { agentId: '', trigger: 'always' }])}
+          >
+            <Plus size={13} /> Add downstream agent
+          </button>
+        </details>
         <div className="workspace-actions">
           <button className="button primary" disabled={busy}>
             {busy ? 'Saving…' : edit ? 'Save schedule' : 'Create schedule'}
@@ -226,6 +284,11 @@ export function Schedules({
                   Enabling this schedule runs it right away, then keeps its interval.
                 </p>
               )}
+              {item.chain?.length ? (
+                <p className="chain-info">
+                  Chain: {item.chain.map((s) => agents.find((a) => a.id === s.agentId)?.name ?? '?').join(' → ')}
+                </p>
+              ) : null}
               {item.lastError && <p role="status">Waiting: {item.lastError}</p>}
               <div className="workspace-actions">
                 {item.lastTaskId && (

@@ -23,11 +23,14 @@ function normalize(snapshot: AppSnapshot): AppSnapshot {
     tasks: snapshot.tasks ?? [],
     activity: snapshot.activity ?? [],
     schedules: snapshot.schedules ?? [],
+    sshKeys: snapshot.sshKeys ?? [],
     defaults: {
       model: snapshot.defaults?.model ?? '',
       provider: snapshot.defaults?.provider ?? '',
       tools: snapshot.defaults?.tools ?? {},
     },
+    github: snapshot.github ?? { configured: false },
+    githubSyncs: snapshot.githubSyncs ?? [],
   };
 }
 

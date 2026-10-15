@@ -23,6 +23,19 @@ export function discoverLocalHermes(): string | undefined {
   return paths.find(existsSync);
 }
 
+export function discoverLocalWorkdir(): string {
+  const candidates = [
+    join(homedir(), 'Development'),
+    join(homedir(), 'dev'),
+    join(homedir(), 'projects'),
+    join(homedir(), 'code'),
+    join(homedir(), 'workspace'),
+    join(homedir(), 'src'),
+    join(homedir(), 'repos'),
+  ];
+  return candidates.find(existsSync) ?? homedir();
+}
+
 /** Finds a coding CLI executable on PATH or in common install folders. Batch shims are not launchable. */
 export function discoverLocalTool(tool: CodingTool): string | undefined {
   const name = process.platform === 'win32' ? `${tool}.exe` : tool;

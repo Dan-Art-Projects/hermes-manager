@@ -146,6 +146,34 @@ export class Vault {
       throw new ApiError(409, 'Saved credentials could not be decrypted.', 'CREDENTIAL_DAMAGED');
     }
   }
+
+  encryptSshKey(id: string, credentials: Credentials): Sealed {
+    this.requireUnlocked();
+    return seal(this.key!, JSON.stringify(credentials), `hermes-manager:sshkey:${id}`);
+  }
+
+  decryptSshKey(id: string, sealed: Sealed): Credentials {
+    this.requireUnlocked();
+    try {
+      return JSON.parse(unseal(this.key!, sealed, `hermes-manager:sshkey:${id}`)) as Credentials;
+    } catch {
+      throw new ApiError(409, 'Saved SSH key could not be decrypted.', 'CREDENTIAL_DAMAGED');
+    }
+  }
+
+  encryptGitHubToken(token: string): Sealed {
+    this.requireUnlocked();
+    return seal(this.key!, token, 'hermes-manager:github-pat');
+  }
+
+  decryptGitHubToken(sealed: Sealed): string {
+    this.requireUnlocked();
+    try {
+      return unseal(this.key!, sealed, 'hermes-manager:github-pat');
+    } catch {
+      throw new ApiError(409, 'GitHub token could not be decrypted.', 'CREDENTIAL_DAMAGED');
+    }
+  }
 }
 
 // SSH library errors are never exposed; this also filters accidental remote echoes.
