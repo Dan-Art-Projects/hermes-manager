@@ -1242,8 +1242,7 @@ main.board-view {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: hidden;
 }
 .board-topbar {
   display: flex;
@@ -1448,10 +1447,9 @@ main.board-view {
 }
 .kanban {
   display: grid;
-  grid-template-columns: repeat(7, 280px);
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: 1fr;
   gap: 10px;
-  min-width: calc(7 * 280px + 6 * 10px);
-  overflow-y: hidden;
   flex: 1;
   min-height: 0;
   align-items: stretch;
@@ -1461,6 +1459,7 @@ main.board-view {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
   padding: 0 8px 8px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3269,10 +3268,6 @@ main.board-view {
   }
   .metric-value {
     font-size: 24px;
-  }
-  .kanban {
-    grid-template-columns: repeat(7, 280px);
-    min-width: calc(7 * 280px + 6 * 10px);
   }
   .search-field {
     min-width: 0;
