@@ -1,5 +1,29 @@
 export type AgentStatus = 'unknown' | 'online' | 'offline' | 'busy';
-export type TaskStatus = 'backlog' | 'ready' | 'running' | 'waiting' | 'review' | 'done' | 'blocked';
+
+export const agentRoles = [
+  { value: 'developer', label: 'Developer' },
+  { value: 'marketing', label: 'Marketing' },
+  { value: 'writer', label: 'Writer' },
+  { value: 'analyst', label: 'Analyst' },
+  { value: 'researcher', label: 'Researcher' },
+  { value: 'operations', label: 'Operations' },
+  { value: 'design', label: 'Design' },
+  { value: 'data-science', label: 'Data Science' },
+  { value: 'devops', label: 'DevOps' },
+  { value: 'security', label: 'Security' },
+  { value: 'support', label: 'Support' },
+] as const;
+export type AgentRole = (typeof agentRoles)[number]['value'];
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  source?: string;
+  installedAt: string;
+}
+export type TaskStatus = 'backlog' | 'ready' | 'running' | 'waiting' | 'review' | 'done' | 'blocked' | 'archived';
 export type Priority = 'low' | 'medium' | 'high';
 export type Runner = 'hermes' | 'opencode' | 'codex' | 'claude';
 export type CodingTool = Exclude<Runner, 'hermes'>;
@@ -58,6 +82,8 @@ export interface Agent {
   toolModels?: Partial<Record<CodingTool, string>>;
   role?: string;
   capabilities?: string[];
+  systemPrompt?: string;
+  skills?: AgentSkill[];
   status: AgentStatus;
   lastSeen?: string;
   lastError?: string;
@@ -242,6 +268,8 @@ export interface AppSnapshot {
   csrfToken: string;
   github: { configured: boolean };
   githubSyncs: GitHubSync[];
+  openaiConfigured: boolean;
+  huggingfaceConfigured: boolean;
 }
 
 export interface AgentInput {
@@ -259,6 +287,7 @@ export interface AgentInput {
   profile: string;
   role?: string;
   capabilities?: string[];
+  systemPrompt?: string;
   toolPaths?: Partial<Record<CodingTool, string>>;
   toolModels?: Partial<Record<CodingTool, string>>;
   credentials?: { password?: string; privateKey?: string; passphrase?: string };

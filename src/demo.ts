@@ -156,4 +156,6 @@ export const demoState: AppSnapshot = {
   ],
   github: { configured: false },
   githubSyncs: [],
+  openaiConfigured: false,
+  huggingfaceConfigured: false,
 };

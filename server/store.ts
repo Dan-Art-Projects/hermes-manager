@@ -244,6 +244,32 @@ export class Store {
     this.setSetting('github-pat-sealed', null);
   }
 
+  openAIKeySealed(): Sealed | undefined {
+    const raw = this.setting<Sealed | null>('openai-key-sealed', null);
+    return raw ?? undefined;
+  }
+
+  saveOpenAIKey(sealed: Sealed): void {
+    this.setSetting('openai-key-sealed', sealed);
+  }
+
+  clearOpenAIKey(): void {
+    this.setSetting('openai-key-sealed', null);
+  }
+
+  huggingFaceKeySealed(): Sealed | undefined {
+    const raw = this.setting<Sealed | null>('huggingface-key-sealed', null);
+    return raw ?? undefined;
+  }
+
+  saveHuggingFaceKey(sealed: Sealed): void {
+    this.setSetting('huggingface-key-sealed', sealed);
+  }
+
+  clearHuggingFaceKey(): void {
+    this.setSetting('huggingface-key-sealed', null);
+  }
+
   githubSyncs(): GitHubSync[] {
     return this.setting<GitHubSync[]>('github-syncs', []);
   }

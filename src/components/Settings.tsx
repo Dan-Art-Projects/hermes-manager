@@ -2,26 +2,32 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  BookOpen,
   Check,
   ExternalLink,
   Github,
   KeyRound,
   Loader2,
   LockKeyhole,
+  Plus,
   Settings2,
   ShieldCheck,
   Trash2,
   UnlockKeyhole,
+  X,
 } from 'lucide-react';
 import {
+  agentRoles,
   codingTools,
   runnerNames,
   type Agent,
+  type AgentSkill,
   type AppSnapshot,
   type CatalogModel,
   type ModelDefaults,
   type SshKey,
 } from '../../shared/types';
+import { curatedSkills, makeCuratedSkillMd } from '../skills';
 import { type Request } from '../api';
 import { Models } from './Workspace';
 
@@ -35,7 +41,7 @@ export const themes: { id: Theme; label: string; color: string }[] = [
   { id: 'teal',   label: 'Teal',   color: '#2fd6c6' },
 ];
 
-type SettingsTab = 'general' | 'vault' | 'ssh-keys' | 'api-keys' | 'models';
+type SettingsTab = 'general' | 'vault' | 'ssh-keys' | 'api-keys' | 'models' | 'skills';
 const msg = (e: unknown) => (e instanceof Error ? e.message : 'Request failed.');
 
 export default function Settings({
@@ -69,6 +75,7 @@ export default function Settings({
     { id: 'ssh-keys', label: 'SSH Keys' },
     { id: 'api-keys', label: 'API Keys' },
     { id: 'models',   label: 'Models' },
+    { id: 'skills',   label: 'Skills' },
   ];
 
   return (
@@ -93,6 +100,7 @@ export default function Settings({
         {tab === 'ssh-keys' && <SshKeysTab sshKeys={sshKeys} request={request} />}
         {tab === 'api-keys' && <ApiKeysTab request={request} state={state} />}
         {tab === 'models'   && <Models request={request} agents={agents} defaults={defaults} />}
+        {tab === 'skills'   && <SkillsTab request={request} agents={agents} />}
       </div>
     </div>
   );
@@ -384,6 +392,8 @@ function ApiKeysTab({ request, state }: { request: Request; state: AppSnapshot }
     <div className="settings-section">
       <NousKeyCard request={request} />
       <GitHubKeyCard request={request} state={state} />
+      <OpenAIKeyCard request={request} />
+      <HuggingFaceKeyCard request={request} />
     </div>
   );
 }
@@ -476,6 +486,156 @@ function NousKeyCard({ request }: { request: Request }) {
   );
 }
 
+function OpenAIKeyCard({ request }: { request: Request }) {
+  const [key, setKey] = useState('');
+  const [configured, setConfigured] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    request<{ configured: boolean }>('/openai/key')
+      .then((r) => setConfigured(r.configured))
+      .catch(() => {});
+  }, []);
+
+  async function save() {
+    if (!key.trim()) return;
+    setBusy(true);
+    setError('');
+    try {
+      await request('/openai/key', 'PUT', { key: key.trim() });
+      setConfigured(true);
+      setKey('');
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError('');
+    try {
+      await request('/openai/key', 'DELETE');
+      setConfigured(false);
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="settings-card">
+      <h3>OpenAI API key</h3>
+      <p className="settings-hint">
+        Used to auto-generate agent instructions. Model: <code>gpt-4o-mini</code>.
+      </p>
+      {error && <p className="form-error">{error}</p>}
+      {configured && (
+        <div className="api-key-status">
+          <span className="gh-connected-badge"><Check size={13} /> Ready — gpt-4o-mini available</span>
+        </div>
+      )}
+      <div className="settings-row">
+        <input
+          type="password"
+          className="field"
+          placeholder={configured ? 'Replace existing key…' : 'sk-…'}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void save(); }}
+          autoComplete="off"
+        />
+        <button className="button primary" disabled={busy || !key.trim()} onClick={() => void save()}>
+          {busy ? <Loader2 size={14} className="spin" /> : configured ? 'Replace' : 'Save key'}
+        </button>
+        {configured && (
+          <button className="button secondary" disabled={busy} onClick={() => void remove()}>
+            Remove
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function HuggingFaceKeyCard({ request }: { request: Request }) {
+  const [key, setKey] = useState('');
+  const [configured, setConfigured] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    request<{ configured: boolean }>('/huggingface/key')
+      .then((r) => setConfigured(r.configured))
+      .catch(() => {});
+  }, []);
+
+  async function save() {
+    if (!key.trim()) return;
+    setBusy(true);
+    setError('');
+    try {
+      await request('/huggingface/key', 'PUT', { key: key.trim() });
+      setConfigured(true);
+      setKey('');
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    setBusy(true);
+    setError('');
+    try {
+      await request('/huggingface/key', 'DELETE');
+      setConfigured(false);
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="settings-card">
+      <h3>HuggingFace API key</h3>
+      <p className="settings-hint">
+        Used for HuggingFace Inference API. Set <code>provider: huggingface</code> on an agent to use it.
+      </p>
+      {error && <p className="form-error">{error}</p>}
+      {configured && (
+        <div className="api-key-status">
+          <span className="gh-connected-badge"><Check size={13} /> Ready — Inference API available</span>
+        </div>
+      )}
+      <div className="settings-row">
+        <input
+          type="password"
+          className="field"
+          placeholder={configured ? 'Replace existing key…' : 'hf_…'}
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') void save(); }}
+          autoComplete="off"
+        />
+        <button className="button primary" disabled={busy || !key.trim()} onClick={() => void save()}>
+          {busy ? <Loader2 size={14} className="spin" /> : configured ? 'Replace' : 'Save key'}
+        </button>
+        {configured && (
+          <button className="button secondary" disabled={busy} onClick={() => void remove()}>
+            Remove
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function GitHubKeyCard({ request, state }: { request: Request; state: AppSnapshot }) {
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
@@ -549,6 +709,175 @@ function GitHubKeyCard({ request, state }: { request: Request; state: AppSnapsho
           <button className="button secondary" disabled={busy} onClick={() => void disconnect()}>
             Disconnect
           </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Skills ──────────────────────────────────────────────────────────────── */
+
+function SkillsTab({ request, agents }: { request: Request; agents: Agent[] }) {
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [installAgent, setInstallAgent] = useState('');
+  const [installTab, setInstallTab] = useState<'browse' | 'url'>('browse');
+  const [skillUrl, setSkillUrl] = useState('');
+  const [agentSkills, setAgentSkills] = useState<Record<string, AgentSkill[]>>(() =>
+    Object.fromEntries(agents.map((a) => [a.id, a.skills ?? []])),
+  );
+
+  const allSkills: { agent: Agent; skill: AgentSkill }[] = agents.flatMap((agent) =>
+    (agentSkills[agent.id] ?? agent.skills ?? []).map((skill) => ({ agent, skill })),
+  );
+
+  async function removeSkill(agentId: string, skillId: string) {
+    setBusy(skillId);
+    setError('');
+    try {
+      await request(`/agents/${agentId}/skills/${skillId}`, 'DELETE');
+      setAgentSkills((prev) => ({ ...prev, [agentId]: (prev[agentId] ?? []).filter((s) => s.id !== skillId) }));
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function installFromUrl() {
+    if (!installAgent || !skillUrl.trim()) return;
+    setBusy('url');
+    setError('');
+    try {
+      const skill = await request<AgentSkill>(`/agents/${installAgent}/skills/fetch`, 'POST', { url: skillUrl.trim() });
+      setAgentSkills((prev) => ({ ...prev, [installAgent]: [...(prev[installAgent] ?? []), skill] }));
+      setSkillUrl('');
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function installCurated(slug: string) {
+    if (!installAgent) return;
+    const curated = curatedSkills.find((s) => s.slug === slug);
+    if (!curated) return;
+    setBusy(slug);
+    setError('');
+    try {
+      const content = makeCuratedSkillMd(curated);
+      const skill = await request<AgentSkill>(`/agents/${installAgent}/skills`, 'POST', { content, source: `curated:${slug}` });
+      setAgentSkills((prev) => ({ ...prev, [installAgent]: [...(prev[installAgent] ?? []), skill] }));
+    } catch (err) {
+      setError(msg(err));
+    } finally {
+      setBusy('');
+    }
+  }
+
+  const agentInstalledSkills = installAgent ? (agentSkills[installAgent] ?? agents.find((a) => a.id === installAgent)?.skills ?? []) : [];
+
+  return (
+    <div className="settings-section">
+      {/* Installed skills across all agents */}
+      <div className="settings-card">
+        <h3><BookOpen size={15} /> Installed skills</h3>
+        <p className="settings-hint">All skills installed across your agents. Each skill is injected as context when the agent runs a task.</p>
+        {error && <p className="form-error">{error}</p>}
+        {allSkills.length === 0 && <p className="settings-hint">No skills installed yet. Use the panel below to add some.</p>}
+        {allSkills.length > 0 && (
+          <div className="skills-global-list">
+            {allSkills.map(({ agent, skill }) => (
+              <div key={skill.id} className="skills-global-row">
+                <div className="skills-global-meta">
+                  <span className="skills-global-name">{skill.name}</span>
+                  <span className="skills-global-agent">{agent.name}</span>
+                </div>
+                <p className="skills-global-desc">{skill.description}</p>
+                <button
+                  className="button danger-text small"
+                  disabled={!!busy}
+                  onClick={() => void removeSkill(agent.id, skill.id)}
+                  title={`Remove ${skill.name} from ${agent.name}`}
+                >
+                  {busy === skill.id ? <Loader2 size={13} className="spin" /> : <Trash2 size={13} />}
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Install new skill */}
+      <div className="settings-card">
+        <h3>Install a skill</h3>
+        <p className="settings-hint">Choose an agent, then pick a skill from the curated list or paste a SKILL.md URL.</p>
+        <label className="form-label">Install on agent</label>
+        <select
+          className="field"
+          value={installAgent}
+          onChange={(e) => setInstallAgent(e.target.value)}
+        >
+          <option value="">— select an agent —</option>
+          {agents.map((a) => (
+            <option key={a.id} value={a.id}>{a.name}{a.role ? ` (${a.role})` : ''}</option>
+          ))}
+        </select>
+
+        {installAgent && (
+          <>
+            <div className="skills-tabs" style={{ marginTop: 12 }}>
+              <button type="button" className={installTab === 'browse' ? 'active' : ''} onClick={() => setInstallTab('browse')}>Browse</button>
+              <button type="button" className={installTab === 'url' ? 'active' : ''} onClick={() => setInstallTab('url')}>From URL</button>
+            </div>
+            {installTab === 'browse' && (
+              <div className="curated-skills" style={{ marginTop: 8 }}>
+                {curatedSkills.map((cs) => {
+                  const installed = agentInstalledSkills.some((s) => s.source === `curated:${cs.slug}`);
+                  return (
+                    <div key={cs.slug} className={`curated-skill-card ${installed ? 'installed' : ''}`}>
+                      <div>
+                        <strong>{cs.name}</strong>
+                        <span className="skill-category">{cs.category}</span>
+                      </div>
+                      <p>{cs.description}</p>
+                      <button
+                        type="button"
+                        className="button secondary small"
+                        disabled={installed || !!busy}
+                        onClick={() => void installCurated(cs.slug)}
+                      >
+                        {busy === cs.slug ? <Loader2 size={11} className="spin" /> : <Plus size={11} />}
+                        {installed ? 'Installed' : 'Install'}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {installTab === 'url' && (
+              <div className="skill-url-form" style={{ marginTop: 8 }}>
+                <input
+                  type="url"
+                  className="field"
+                  placeholder="https://raw.githubusercontent.com/…/SKILL.md"
+                  value={skillUrl}
+                  onChange={(e) => setSkillUrl(e.target.value)}
+                  maxLength={2048}
+                />
+                <button
+                  type="button"
+                  className="button primary small"
+                  disabled={!skillUrl.trim() || !!busy}
+                  onClick={() => void installFromUrl()}
+                >
+                  {busy === 'url' ? <Loader2 size={13} className="spin" /> : 'Install'}
+                </button>
+                <span className="settings-hint">Paste a raw URL to any SKILL.md file.</span>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

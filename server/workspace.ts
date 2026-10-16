@@ -450,6 +450,72 @@ export function workspace(
     res.json(value);
   });
 
+  app.get('/api/openai/key', (_req, res) => {
+    res.json({ configured: !!store.openAIKeySealed() });
+  });
+  app.put('/api/openai/key', (req, res) => {
+    vault.requireUnlocked();
+    const { key } = z.object({ key: z.string().trim().min(1).max(4096) }).strict().parse(req.body);
+    store.saveOpenAIKey(vault.encryptOpenAIKey(key));
+    res.json({ configured: true });
+  });
+  app.delete('/api/openai/key', (_req, res) => {
+    vault.requireUnlocked();
+    store.clearOpenAIKey();
+    res.json({ configured: false });
+  });
+
+  app.post('/api/openai/generate-instructions', async (req, res) => {
+    vault.requireUnlocked();
+    const sealed = store.openAIKeySealed();
+    if (!sealed) throw new ApiError(409, 'No OpenAI key configured.', 'OPENAI_NOT_CONFIGURED');
+    const { name, role, capabilities } = z
+      .object({
+        name: z.string().trim().min(1).max(100),
+        role: z.string().trim().max(200).optional(),
+        capabilities: z.array(z.string().max(100)).max(50).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    const apiKey = vault.decryptOpenAIKey(sealed);
+    const rolePart = role ? ` with role '${role}'` : '';
+    const capsPart = capabilities?.length ? ` and capabilities: ${capabilities.join(', ')}` : '';
+    const userMsg = `Generate a system prompt (3-5 sentences) for an AI agent named '${name}'${rolePart}${capsPart}. Define the agent's expertise, communication style, and work priorities. Return only the system prompt text, no extra commentary.`;
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      signal: AbortSignal.timeout(30000),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 400,
+        messages: [{ role: 'user', content: userMsg }],
+      }),
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new ApiError(502, `OpenAI error: ${response.status} ${text.slice(0, 200)}`);
+    }
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+    const systemPrompt = data.choices?.[0]?.message?.content?.trim() ?? '';
+    if (!systemPrompt) throw new ApiError(502, 'OpenAI returned an empty response.');
+    res.json({ systemPrompt });
+  });
+
+  app.get('/api/huggingface/key', (_req, res) => {
+    res.json({ configured: !!store.huggingFaceKeySealed() });
+  });
+  app.put('/api/huggingface/key', (req, res) => {
+    vault.requireUnlocked();
+    const { key } = z.object({ key: z.string().trim().min(1).max(4096) }).strict().parse(req.body);
+    store.saveHuggingFaceKey(vault.encryptHuggingFaceKey(key));
+    res.json({ configured: true });
+  });
+  app.delete('/api/huggingface/key', (_req, res) => {
+    vault.requireUnlocked();
+    store.clearHuggingFaceKey();
+    res.json({ configured: false });
+  });
+
   const tick = () => {
     if (!vault.state.unlocked) return;
     const all = schedules();

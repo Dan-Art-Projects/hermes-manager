@@ -2,19 +2,27 @@ import { useEffect, useState, type FormEvent, type KeyboardEvent } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
+  ChevronDown,
+  ChevronRight,
   KeyRound,
+  Loader2,
   LockKeyhole,
+  Plus,
   ShieldCheck,
+  Sparkles,
   Terminal,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   agentColors,
+  agentRoles,
   codingTools,
   runnerNames,
   type Agent,
   type AgentColor,
   type AgentInput,
+  type AgentSkill,
   type AppSnapshot,
   type Runner,
   type SshKey,
@@ -22,6 +30,7 @@ import {
   type TaskStatus,
 } from '../../shared/types';
 import { agentStyle, statusNames, statuses, type Request } from '../api';
+import { curatedSkills, makeCuratedSkillMd } from '../skills';
 import Modal from './Modal';
 
 export function VaultModal({
@@ -273,6 +282,7 @@ export function AgentModal({
   agent,
   agents = [],
   sshKeys = [],
+  openaiConfigured = false,
   request,
   onClose,
   onSaved,
@@ -281,6 +291,7 @@ export function AgentModal({
   agent?: Agent;
   agents?: Agent[];
   sshKeys?: SshKey[];
+  openaiConfigured?: boolean;
   request: Request;
   onClose: () => void;
   onSaved: (agent: Agent) => void;
@@ -291,7 +302,16 @@ export function AgentModal({
   const [localWorkdir, setLocalWorkdir] = useState(agent?.workdir ?? '');
   const [model, setModel] = useState(agent?.model ?? '');
   const [provider, setProvider] = useState(agent?.provider ?? '');
+  const [role, setRole] = useState(agent?.role ?? '');
   const [capabilities, setCapabilities] = useState<string[]>(agent?.capabilities ?? []);
+  const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '');
+  const [generating, setGenerating] = useState(false);
+  const [skills, setSkills] = useState<AgentSkill[]>(agent?.skills ?? []);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsTab, setSkillsTab] = useState<'browse' | 'url'>('browse');
+  const [skillUrl, setSkillUrl] = useState('');
+  const [skillBusy, setSkillBusy] = useState('');
+  const [skillError, setSkillError] = useState('');
   const taken = agents.filter((other) => other.id !== agent?.id).map((other) => other.color);
   const [color, setColor] = useState<AgentColor>(
     agent?.color ?? agentColors.find((value) => !taken.includes(value)) ?? agentColors[0],
@@ -328,6 +348,71 @@ export function AgentModal({
       setDetectBusy(false);
     }
   }
+  async function generateInstructions() {
+    if (!agent && !role) return;
+    setGenerating(true);
+    setError('');
+    try {
+      const formName = (document.querySelector('[name="name"]') as HTMLInputElement | null)?.value ?? agent?.name ?? '';
+      const result = await request<{ systemPrompt: string }>('/openai/generate-instructions', 'POST', {
+        name: formName || agent?.name || 'Agent',
+        role: role || undefined,
+        capabilities: capabilities.length ? capabilities : undefined,
+      });
+      setSystemPrompt(result.systemPrompt);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function installSkillFromUrl() {
+    if (!agent || !skillUrl.trim()) return;
+    setSkillBusy('url');
+    setSkillError('');
+    try {
+      const skill = await request<AgentSkill>(`/agents/${agent.id}/skills/fetch`, 'POST', { url: skillUrl.trim() });
+      setSkills((prev) => [...prev, skill]);
+      setSkillUrl('');
+    } catch (err) {
+      setSkillError((err as Error).message);
+    } finally {
+      setSkillBusy('');
+    }
+  }
+
+  async function installCuratedSkill(slug: string) {
+    if (!agent) return;
+    const curated = curatedSkills.find((s) => s.slug === slug);
+    if (!curated) return;
+    setSkillBusy(slug);
+    setSkillError('');
+    try {
+      const content = makeCuratedSkillMd(curated);
+      const skill = await request<AgentSkill>(`/agents/${agent.id}/skills`, 'POST', { content, source: `curated:${slug}` });
+      setSkills((prev) => [...prev, skill]);
+    } catch (err) {
+      setSkillError((err as Error).message);
+    } finally {
+      setSkillBusy('');
+    }
+  }
+
+  async function removeSkill(skillId: string) {
+    if (!agent) return;
+    setSkillBusy(skillId);
+    setSkillError('');
+    try {
+      await request(`/agents/${agent.id}/skills/${skillId}`, 'DELETE');
+      setSkills((prev) => prev.filter((s) => s.id !== skillId));
+    } catch (err) {
+      setSkillError((err as Error).message);
+    } finally {
+      setSkillBusy('');
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -351,8 +436,9 @@ export function AgentModal({
       profile: text('profile').trim(),
       model: text('model').trim(),
       provider: text('provider').trim(),
-      role: text('role').trim() || undefined,
+      role: role.trim() || undefined,
       capabilities,
+      systemPrompt: systemPrompt.trim() || undefined,
       color,
       toolPaths: Object.fromEntries(codingTools.map((tool) => [tool, text(`path-${tool}`).trim()])),
       toolModels: Object.fromEntries(codingTools.map((tool) => [tool, text(`model-${tool}`).trim()])),
@@ -379,7 +465,7 @@ export function AgentModal({
             return (value ?? '') !== (before ?? '');
           }),
         )
-      : input;
+      : { ...input };
     if (agent && !Object.keys(body).length) {
       setBusy(false);
       onSaved(agent);
@@ -636,6 +722,7 @@ export function AgentModal({
               <option value="openrouter" />
               <option value="openai-codex" />
               <option value="anthropic" />
+              <option value="huggingface" />
               <option value="custom" />
             </datalist>
           </label>
@@ -733,12 +820,13 @@ export function AgentModal({
             </label>
             <label>
               Role <span className="optional">optional</span>
-              <input
-                name="role"
-                defaultValue={agent?.role}
-                placeholder="e.g. Engineering, Research, Operations"
-              />
-              <span className="field-hint">Describes what this agent specialises in.</span>
+              <select name="role" value={role} onChange={(e) => setRole(e.target.value)}>
+                <option value="">General (no specific role)</option>
+                {agentRoles.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+              <span className="field-hint">Used for task routing and agent skill suggestions.</span>
             </label>
             <label>
               Capabilities <span className="optional">optional</span>
@@ -749,6 +837,114 @@ export function AgentModal({
               />
               <span className="field-hint">Skills used for smart task assignment.</span>
             </label>
+            <label>
+              System instructions <span className="optional">optional</span>
+              <div className="system-prompt-row">
+                <textarea
+                  rows={3}
+                  maxLength={4096}
+                  placeholder="Instructions the agent always follows, e.g. 'You are a senior TypeScript developer…'"
+                  value={systemPrompt}
+                  onChange={(e) => setSystemPrompt(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="button secondary small"
+                  disabled={!openaiConfigured || generating}
+                  title={!openaiConfigured ? 'Configure OpenAI key in Settings → API Keys' : 'Generate with AI'}
+                  onClick={() => void generateInstructions()}
+                >
+                  {generating ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
+                  Generate
+                </button>
+              </div>
+              <span className="field-hint">Prepended to every task this agent runs.</span>
+            </label>
+
+            {agent && (
+              <div className="skills-section">
+                <button
+                  type="button"
+                  className="skills-toggle"
+                  onClick={() => setSkillsOpen((v) => !v)}
+                >
+                  {skillsOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  Agent skills
+                  {skills.length > 0 && <span className="skills-count">{skills.length}</span>}
+                </button>
+                {skillsOpen && (
+                  <div className="skills-panel">
+                    {skills.length > 0 && (
+                      <div className="skills-chips">
+                        {skills.map((skill) => (
+                          <span key={skill.id} className="skill-chip">
+                            {skill.name}
+                            <button
+                              type="button"
+                              disabled={!!skillBusy}
+                              onClick={() => void removeSkill(skill.id)}
+                              aria-label={`Remove ${skill.name}`}
+                            >
+                              {skillBusy === skill.id ? <Loader2 size={11} className="spin" /> : <X size={11} />}
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {skillError && <p className="form-error">{skillError}</p>}
+                    <div className="skills-tabs">
+                      <button type="button" className={skillsTab === 'browse' ? 'active' : ''} onClick={() => setSkillsTab('browse')}>Browse</button>
+                      <button type="button" className={skillsTab === 'url' ? 'active' : ''} onClick={() => setSkillsTab('url')}>From URL</button>
+                    </div>
+                    {skillsTab === 'browse' && (
+                      <div className="curated-skills">
+                        {curatedSkills.map((cs) => {
+                          const installed = skills.some((s) => s.source === `curated:${cs.slug}`);
+                          return (
+                            <div key={cs.slug} className={`curated-skill-card ${installed ? 'installed' : ''}`}>
+                              <div>
+                                <strong>{cs.name}</strong>
+                                <span className="skill-category">{cs.category}</span>
+                              </div>
+                              <p>{cs.description}</p>
+                              <button
+                                type="button"
+                                className="button secondary small"
+                                disabled={installed || !!skillBusy}
+                                onClick={() => void installCuratedSkill(cs.slug)}
+                              >
+                                {skillBusy === cs.slug ? <Loader2 size={11} className="spin" /> : <Plus size={11} />}
+                                {installed ? 'Installed' : 'Install'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {skillsTab === 'url' && (
+                      <div className="skill-url-form">
+                        <input
+                          type="url"
+                          placeholder="https://raw.githubusercontent.com/…/SKILL.md"
+                          value={skillUrl}
+                          onChange={(e) => setSkillUrl(e.target.value)}
+                          maxLength={2048}
+                        />
+                        <button
+                          type="button"
+                          className="button primary small"
+                          disabled={!skillUrl.trim() || !!skillBusy}
+                          onClick={() => void installSkillFromUrl()}
+                        >
+                          {skillBusy === 'url' ? <Loader2 size={13} className="spin" /> : 'Install'}
+                        </button>
+                        <span className="field-hint">Paste a raw URL to a SKILL.md file.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </details>
         <details className="connection-options">

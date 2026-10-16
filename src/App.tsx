@@ -1,6 +1,7 @@
 import { lazy, Suspense, useDeferredValue, useEffect, useRef, useState, type DragEvent } from 'react';
 import {
   Activity,
+  Archive,
   ArrowDown,
   Bell,
   BellOff,
@@ -94,6 +95,8 @@ const blank: AppSnapshot = {
   csrfToken: '',
   github: { configured: false },
   githubSyncs: [],
+  openaiConfigured: false,
+  huggingfaceConfigured: false,
 };
 
 function Logo() {
@@ -151,6 +154,7 @@ export default function App() {
   const query = useDeferredValue(search.toLowerCase());
   const [agentFilter, setAgentFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
+  const [showArchived, setShowArchived] = useState(false);
   const [layout, setLayout] = useState<'board' | 'list'>('board');
   const [toast, setToast] = useState<{ message: string; error?: boolean } | null>(null);
   const [checking, setChecking] = useState<string[]>([]);
@@ -252,8 +256,10 @@ export default function App() {
   const running = state.tasks.filter((t) => t.status === 'running');
   const review = state.tasks.filter((t) => t.status === 'review');
   const done = state.tasks.filter((t) => t.status === 'done');
+  const archivedCount = state.tasks.filter((t) => t.status === 'archived').length;
   const tasks = state.tasks.filter(
     (task) =>
+      (showArchived ? task.status === 'archived' : task.status !== 'archived') &&
       (agentFilter === 'all' ||
         (agentFilter === 'unassigned' ? !task.agentId : task.agentId === agentFilter)) &&
       (priorityFilter === 'all' || task.priority === priorityFilter) &&
@@ -392,6 +398,15 @@ export default function App() {
       setToast({ message: (error as Error).message, error: true });
     }
   }
+  async function archiveTask(id: string, restore = false) {
+    if (demo) return;
+    try {
+      await request(`/tasks/${id}`, 'PATCH', { status: restore ? 'done' : 'archived' });
+    } catch (error) {
+      setToast({ message: (error as Error).message, error: true });
+    }
+  }
+
   async function moveTask(event: DragEvent, status: TaskStatus) {
     event.preventDefault();
     const id = event.dataTransfer.getData('text/plain');
@@ -660,7 +675,7 @@ export default function App() {
             {connectionError}
           </div>
         )}
-        <main>
+        <main className={view === 'board' ? 'board-view' : ''}>
           <div className="page-heading">
             <div>
               <div className="eyebrow">
@@ -904,29 +919,40 @@ export default function App() {
                         <option value="low">Low priority</option>
                       </select>
                     </label>
-                    {(search || agentFilter !== 'all' || priorityFilter !== 'all') && (
+                    {(search || agentFilter !== 'all' || priorityFilter !== 'all' || showArchived) && (
                       <button
                         className="text-button"
                         onClick={() => {
                           setSearch('');
                           setAgentFilter('all');
                           setPriorityFilter('all');
+                          setShowArchived(false);
                         }}
                       >
                         Reset
                       </button>
                     )}
                   </div>
-                  <span className="board-hint">
-                    {demo ? (
-                      'Read-only preview'
-                    ) : (
-                      <>
-                        <span className="live-dot" />
-                        Live updates
-                      </>
-                    )}
-                  </span>
+                  <div className="board-hint-row">
+                    <button
+                      className={`text-button archive-toggle ${showArchived ? 'active' : ''}`}
+                      onClick={() => setShowArchived((v) => !v)}
+                      title={showArchived ? 'Back to active tasks' : 'Show archived tasks'}
+                    >
+                      <Archive size={13} />
+                      {showArchived ? 'Active tasks' : `Archive${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
+                    </button>
+                    <span className="board-hint">
+                      {demo ? (
+                        'Read-only preview'
+                      ) : (
+                        <>
+                          <span className="live-dot" />
+                          Live updates
+                        </>
+                      )}
+                    </span>
+                  </div>
                 </div>
                 {!state.tasks.length && !search && (
                   <div className="onboarding">
@@ -946,7 +972,7 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {layout === 'board' ? (
+                {layout === 'board' && !showArchived ? (
                   <div className="kanban" aria-label="Kanban board">
                     {statuses.map((status) => {
                       const column = tasks.filter((task) => task.status === status);
@@ -1009,6 +1035,7 @@ export default function App() {
                                       demo={demo}
                                       onOpen={() => setDialog({ kind: 'detail', id: task.id })}
                                       onDrag={setDragged}
+                                      onArchive={() => void archiveTask(task.id, task.status === 'archived')}
                                     />
                                   ))}
                                   {[...groups.entries()].map(([groupId, groupTasks]) => (
@@ -1025,6 +1052,7 @@ export default function App() {
                                           demo={demo}
                                           onOpen={() => setDialog({ kind: 'detail', id: task.id })}
                                           onDrag={setDragged}
+                                          onArchive={() => void archiveTask(task.id, task.status === 'archived')}
                                         />
                                       ))}
                                     </details>
@@ -1060,6 +1088,26 @@ export default function App() {
                         </section>
                       );
                     })}
+                  </div>
+                ) : showArchived ? (
+                  <div className="archived-list">
+                    {tasks.map((task) => (
+                      <TaskCard
+                        key={task.id}
+                        task={task}
+                        agent={state.agents.find((a) => a.id === task.agentId)}
+                        demo={demo}
+                        onOpen={() => setDialog({ kind: 'detail', id: task.id })}
+                        onDrag={setDragged}
+                        onArchive={() => void archiveTask(task.id, true)}
+                      />
+                    ))}
+                    {!tasks.length && (
+                      <div className="empty-inline">
+                        <Archive size={25} />
+                        <p>No archived tasks.</p>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="task-table">
@@ -1202,7 +1250,10 @@ export default function App() {
                             </label>
                             <Avatar agent={agent} needsYou={waitingAgents.has(agent.id)} />
                             <div>
-                              <h3>{agent.name}</h3>
+                              <h3>
+                                {agent.name}
+                                {agent.role && <span className="role-badge">{agent.role}</span>}
+                              </h3>
                               <code>
                                 {agent.transport === 'local'
                                   ? 'This computer'
@@ -1544,6 +1595,7 @@ export default function App() {
           agent={dialog.agent}
           agents={state.agents}
           sshKeys={state.sshKeys}
+          openaiConfigured={state.openaiConfigured}
           request={request}
           onClose={() => setDialog(null)}
           onSaved={(agent) => {
@@ -1717,17 +1769,19 @@ function TaskCard({
   demo,
   onOpen,
   onDrag,
+  onArchive,
 }: {
   task: Task;
   agent?: Agent;
   demo: boolean;
   onOpen: () => void;
   onDrag: (id: string | null) => void;
+  onArchive?: () => void;
 }) {
   return (
+    <div className={`task-card task-${task.status}`} style={agentStyle(agent)}>
     <button
-      className={`task-card task-${task.status}`}
-      style={agentStyle(agent)}
+      className="task-card-body"
       draggable={!demo && task.status !== 'running'}
       onDragStart={(event) => {
         event.dataTransfer.setData('text/plain', task.id);
@@ -1819,5 +1873,16 @@ function TaskCard({
         </span>
       </footer>
     </button>
+    {!demo && onArchive && task.status !== 'running' && (
+      <button
+        className="task-archive-btn"
+        title={task.status === 'archived' ? 'Restore task' : 'Archive task'}
+        onClick={(e) => { e.stopPropagation(); onArchive(); }}
+        aria-label={task.status === 'archived' ? 'Restore task' : 'Archive task'}
+      >
+        <Archive size={12} />
+      </button>
+    )}
+    </div>
   );
 }

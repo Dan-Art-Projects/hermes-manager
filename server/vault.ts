@@ -174,6 +174,34 @@ export class Vault {
       throw new ApiError(409, 'GitHub token could not be decrypted.', 'CREDENTIAL_DAMAGED');
     }
   }
+
+  encryptOpenAIKey(key: string): Sealed {
+    this.requireUnlocked();
+    return seal(this.key!, key, 'hermes-manager:openai-key');
+  }
+
+  decryptOpenAIKey(sealed: Sealed): string {
+    this.requireUnlocked();
+    try {
+      return unseal(this.key!, sealed, 'hermes-manager:openai-key');
+    } catch {
+      throw new ApiError(409, 'OpenAI key could not be decrypted.', 'CREDENTIAL_DAMAGED');
+    }
+  }
+
+  encryptHuggingFaceKey(key: string): Sealed {
+    this.requireUnlocked();
+    return seal(this.key!, key, 'hermes-manager:hf-key');
+  }
+
+  decryptHuggingFaceKey(sealed: Sealed): string {
+    this.requireUnlocked();
+    try {
+      return unseal(this.key!, sealed, 'hermes-manager:hf-key');
+    } catch {
+      throw new ApiError(409, 'HuggingFace key could not be decrypted.', 'CREDENTIAL_DAMAGED');
+    }
+  }
 }
 
 // SSH library errors are never exposed; this also filters accidental remote echoes.

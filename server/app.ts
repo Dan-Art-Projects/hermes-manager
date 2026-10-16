@@ -15,6 +15,7 @@ import {
   effectiveToolModel,
   runnerNames,
   type Agent,
+  type AgentSkill,
   type AppSnapshot,
   type ModelDefaults,
   type Priority,
@@ -80,12 +81,22 @@ const agentFields = z
       .optional(),
     role: z.string().max(200).trim().optional(),
     capabilities: z.array(z.string().max(100).trim()).max(50).optional(),
+    systemPrompt: z.string().max(4096).optional(),
     credentials: credentialSchema.optional(),
     sshKeyId: z.string().uuid().optional(),
   })
   .strict();
 /** Fields that only affect future runs; changing them does not require a new connection check. */
-const softAgentFields = new Set(['name', 'model', 'provider', 'color', 'toolModels', 'role', 'capabilities']);
+const softAgentFields = new Set([
+  'name',
+  'model',
+  'provider',
+  'color',
+  'toolModels',
+  'role',
+  'capabilities',
+  'systemPrompt',
+]);
 const runnerSchema = z.enum(['hermes', 'claude', 'codex', 'opencode']);
 const agentCreate = agentFields.extend({
   port: agentFields.shape.port.default(22),
@@ -103,7 +114,7 @@ const taskFields = z
     agentId: z.string().uuid().nullable(),
     runner: runnerSchema,
     workdir: clean(4096).trim(),
-    status: z.enum(['backlog', 'ready', 'waiting', 'review', 'done', 'blocked']),
+    status: z.enum(['backlog', 'ready', 'waiting', 'review', 'done', 'blocked', 'archived']),
     priority: z.enum(['low', 'medium', 'high']),
     tags: z.array(z.string().max(100).trim()).max(50).optional(),
     groupId: z.string().uuid().optional(),
@@ -129,6 +140,19 @@ const addTurn = (turns: Turn[] | undefined, role: Turn['role'], text: string): T
 interface FollowUp {
   message: string;
   resume?: string;
+}
+
+function parseSkillMd(content: string): { name: string; description: string } {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) throw new ApiError(400, 'Invalid SKILL.md: missing frontmatter.');
+  const yaml = match[1];
+  const nameMatch = yaml.match(/^name:\s*(.+)$/m);
+  const descMatch = yaml.match(/^description:\s*(.+)$/m);
+  if (!nameMatch || !descMatch) throw new ApiError(400, 'SKILL.md must have name and description.');
+  return {
+    name: nameMatch[1].trim().replace(/^['"]|['"]$/g, ''),
+    description: descMatch[1].trim().replace(/^['"]|['"]$/g, ''),
+  };
 }
 
 export interface ManagerOptions {
@@ -203,6 +227,8 @@ export function createManager(options: ManagerOptions = {}) {
     csrfToken,
     github: { configured: !!store.githubTokenSealed() },
     githubSyncs: store.githubSyncs(),
+    openaiConfigured: !!store.openAIKeySealed(),
+    huggingfaceConfigured: !!store.huggingFaceKeySealed(),
   });
   const send = (ws: WebSocket, value: unknown) => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -231,6 +257,12 @@ export function createManager(options: ManagerOptions = {}) {
     const task = store.task(id);
     if (!task) throw new ApiError(404, 'Task not found.');
     return task;
+  };
+  const installSkill = (agent: Agent, content: string, source?: string): AgentSkill => {
+    const { name, description } = parseSkillMd(content);
+    const skill: AgentSkill = { id: randomUUID(), name, description, content, source, installedAt: new Date().toISOString() };
+    store.saveAgent({ ...agent, skills: [...(agent.skills ?? []), skill] });
+    return skill;
   };
   const idle = (agentId: string) => {
     if (
@@ -383,7 +415,11 @@ export function createManager(options: ManagerOptions = {}) {
     const runner: Runner = task.runner ?? 'hermes';
     const spec = runners[runner];
     const resume = followUp?.resume && spec.canResume(agent) ? followUp.resume : undefined;
-    const original = task.description || task.title;
+    const taskBody = task.description || task.title;
+    const agentContext: string[] = [];
+    if (agent.systemPrompt) agentContext.push(`[Agent Instructions]\n${agent.systemPrompt}`);
+    for (const skill of agent.skills ?? []) agentContext.push(`[Skill: ${skill.name}]\n${skill.content}`);
+    const original = agentContext.length ? `${agentContext.join('\n\n')}\n\n${taskBody}` : taskBody;
     const prompt = !followUp
       ? original
       : resume
@@ -831,6 +867,41 @@ export function createManager(options: ManagerOptions = {}) {
     store.addActivity('agent', `SSH host key explicitly trusted for "${agent.name}".`);
     changed();
     res.json(updated);
+  });
+
+  app.get('/api/agents/:id/skills', (req, res) => {
+    const agent = getAgent(req.params.id);
+    res.json(agent.skills ?? []);
+  });
+
+  app.post('/api/agents/:id/skills', (req, res) => {
+    const agent = getAgent(req.params.id);
+    const { content, source } = z
+      .object({ content: z.string().min(1).max(128 * 1024), source: z.string().max(2048).optional() })
+      .strict()
+      .parse(req.body);
+    const skill = installSkill(agent, content, source);
+    changed();
+    res.status(201).json(skill);
+  });
+
+  app.post('/api/agents/:id/skills/fetch', async (req, res) => {
+    const agent = getAgent(req.params.id);
+    const { url } = z.object({ url: z.string().url().max(2048) }).strict().parse(req.body);
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new ApiError(502, `Could not fetch skill: ${response.status}`);
+    const content = await response.text();
+    const skill = installSkill(agent, content, url);
+    changed();
+    res.status(201).json(skill);
+  });
+
+  app.delete('/api/agents/:id/skills/:skillId', (req, res) => {
+    const agent = getAgent(req.params.id);
+    const updated: Agent = { ...agent, skills: (agent.skills ?? []).filter((s) => s.id !== req.params.skillId) };
+    store.saveAgent(updated);
+    changed();
+    res.json({ ok: true });
   });
 
   app.post('/api/tasks', (req, res) => {

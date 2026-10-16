@@ -31,6 +31,8 @@ function normalize(snapshot: AppSnapshot): AppSnapshot {
     },
     github: snapshot.github ?? { configured: false },
     githubSyncs: snapshot.githubSyncs ?? [],
+    openaiConfigured: snapshot.openaiConfigured ?? false,
+    huggingfaceConfigured: snapshot.huggingfaceConfigured ?? false,
   };
 }
 
@@ -125,8 +127,9 @@ export const statusNames = {
   review: 'Review',
   done: 'Done',
   blocked: 'Blocked',
+  archived: 'Archived',
 } as const;
-export const statuses = Object.keys(statusNames) as (keyof typeof statusNames)[];
+export const statuses = ['backlog', 'ready', 'running', 'waiting', 'review', 'done', 'blocked'] as const satisfies (keyof typeof statusNames)[];
 
 export interface AttentionItem {
   key: string;
