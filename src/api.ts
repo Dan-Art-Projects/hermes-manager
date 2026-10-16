@@ -33,6 +33,7 @@ function normalize(snapshot: AppSnapshot): AppSnapshot {
     githubSyncs: snapshot.githubSyncs ?? [],
     openaiConfigured: snapshot.openaiConfigured ?? false,
     huggingfaceConfigured: snapshot.huggingfaceConfigured ?? false,
+    brainEntries: snapshot.brainEntries ?? [],
   };
 }
 

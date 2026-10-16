@@ -17,6 +17,7 @@ import {
   type Agent,
   type AgentSkill,
   type AppSnapshot,
+  type BrainEntry,
   type ModelDefaults,
   type Priority,
   type Runner,
@@ -229,6 +230,7 @@ export function createManager(options: ManagerOptions = {}) {
     githubSyncs: store.githubSyncs(),
     openaiConfigured: !!store.openAIKeySealed(),
     huggingfaceConfigured: !!store.huggingFaceKeySealed(),
+    brainEntries: store.brainEntries(),
   });
   const send = (ws: WebSocket, value: unknown) => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -258,6 +260,48 @@ export function createManager(options: ManagerOptions = {}) {
     if (!task) throw new ApiError(404, 'Task not found.');
     return task;
   };
+  const extractBrainEntry = async (task: Task): Promise<BrainEntry> => {
+    const sealed = store.openAIKeySealed();
+    if (!sealed) throw new ApiError(409, 'OpenAI key not configured.');
+    const apiKey = vault.decryptOpenAIKey(sealed);
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 300,
+        messages: [
+          { role: 'system', content: 'You are a knowledge extraction assistant.' },
+          {
+            role: 'user',
+            content: `Extract the key outcome or learning from this completed task. Respond with valid JSON only: {"title": "<max 8 words>", "insight": "<2-3 sentences>", "tags": ["<1-5 lowercase kebab-case topics>"]}\n\nTask title: ${task.title}\n\nReport (excerpt):\n${(task.report ?? '').slice(0, 3000)}`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) {
+      const err = await response.text().catch(() => '');
+      throw new ApiError(502, `OpenAI error: ${err.slice(0, 200)}`);
+    }
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+    const raw = data.choices?.[0]?.message?.content ?? '{}';
+    const parsed = JSON.parse(raw) as { title?: string; insight?: string; tags?: string[] };
+    const now = new Date().toISOString();
+    return {
+      id: randomUUID(),
+      type: 'task-summary',
+      title: String(parsed.title ?? task.title).slice(0, 200),
+      content: String(parsed.insight ?? '').slice(0, 10000),
+      tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 20).map(String) : [],
+      taskId: task.id,
+      agentId: task.agentId ?? undefined,
+      source: 'ai-extracted',
+      createdAt: now,
+      updatedAt: now,
+    };
+  };
+
   const installSkill = (agent: Agent, content: string, source?: string): AgentSkill => {
     const { name, description } = parseSkillMd(content);
     const skill: AgentSkill = { id: randomUUID(), name, description, content, source, installedAt: new Date().toISOString() };
@@ -519,6 +563,16 @@ export function createManager(options: ManagerOptions = {}) {
         turns: report ? addTurn(current.turns, 'agent', report) : current.turns,
       };
       store.saveTask(updated);
+      if (!waiting && outcome.success && updated.report && store.openAIKeySealed()) {
+        void (async () => {
+          try {
+            if (store.brainEntries().some((e) => e.taskId === updated.id)) return;
+            const entry = await extractBrainEntry(updated);
+            store.saveBrainEntry(entry);
+            changed();
+          } catch { /* silent — extraction failure must not affect task status */ }
+        })();
+      }
       store.saveAgent({
         ...getAgent(agent.id),
         status: outcome.success ? 'online' : 'unknown',
@@ -902,6 +956,64 @@ export function createManager(options: ManagerOptions = {}) {
     store.saveAgent(updated);
     changed();
     res.json({ ok: true });
+  });
+
+  const brainEntryFields = z.object({
+    type: z.enum(['note', 'link', 'snippet', 'insight', 'task-summary']),
+    title: z.string().min(1).max(200),
+    content: z.string().max(10000),
+    url: z.string().url().optional(),
+    tags: z.array(z.string().max(50)).max(20).optional(),
+    taskId: z.string().optional(),
+    agentId: z.string().optional(),
+  });
+
+  app.get('/api/brain', (_req, res) => {
+    res.json(store.brainEntries());
+  });
+
+  app.post('/api/brain', (req, res) => {
+    if (store.brainEntries().length >= 10000) throw new ApiError(409, 'Brain entry limit reached (10000).');
+    const input = brainEntryFields.parse(req.body);
+    const now = new Date().toISOString();
+    const entry: BrainEntry = {
+      ...input,
+      id: randomUUID(),
+      tags: input.tags ?? [],
+      source: 'manual',
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.saveBrainEntry(entry);
+    changed();
+    res.status(201).json(entry);
+  });
+
+  app.patch('/api/brain/:id', (req, res) => {
+    const existing = store.brainEntry(req.params.id);
+    if (!existing) throw new ApiError(404, 'Brain entry not found.');
+    const input = brainEntryFields.partial().parse(req.body);
+    const updated: BrainEntry = { ...existing, ...input, tags: input.tags ?? existing.tags, updatedAt: new Date().toISOString() };
+    store.saveBrainEntry(updated);
+    changed();
+    res.json(updated);
+  });
+
+  app.delete('/api/brain/:id', (req, res) => {
+    if (!store.brainEntry(req.params.id)) throw new ApiError(404, 'Brain entry not found.');
+    store.deleteBrainEntry(req.params.id);
+    changed();
+    res.json({ ok: true });
+  });
+
+  app.post('/api/brain/extract/:taskId', async (req, res) => {
+    vault.requireUnlocked();
+    const task = getTask(req.params.taskId);
+    if (!task.report) throw new ApiError(400, 'Task has no report to extract from.');
+    const entry = await extractBrainEntry(task);
+    store.saveBrainEntry(entry);
+    changed();
+    res.status(201).json(entry);
   });
 
   app.post('/api/tasks', (req, res) => {

@@ -158,4 +158,5 @@ export const demoState: AppSnapshot = {
   githubSyncs: [],
   openaiConfigured: false,
   huggingfaceConfigured: false,
+  brainEntries: [],
 };

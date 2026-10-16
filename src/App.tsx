@@ -5,6 +5,7 @@ import {
   ArrowDown,
   Bell,
   BellOff,
+  BrainCircuit,
   CalendarClock,
   Code2,
   ArrowRight,
@@ -62,9 +63,10 @@ import TaskDetail from './components/TaskDetail';
 import { Schedules, Library } from './components/Workspace';
 import GitHub from './components/GitHub';
 import Settings, { type Theme } from './components/Settings';
+import BrainView from './components/Brain';
 
 const TerminalPanel = lazy(() => import('./components/TerminalPanel'));
-type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'settings';
+type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'brain' | 'settings';
 type Dialog =
   | { kind: 'agent'; agent?: Agent }
   | { kind: 'task'; status?: TaskStatus }
@@ -82,6 +84,7 @@ const viewNames: Record<View, string> = {
   documents: 'Documents',
   media: 'Media gallery',
   github: 'GitHub',
+  brain: 'Second Brain',
   settings: 'Settings',
 };
 const blank: AppSnapshot = {
@@ -97,6 +100,7 @@ const blank: AppSnapshot = {
   githubSyncs: [],
   openaiConfigured: false,
   huggingfaceConfigured: false,
+  brainEntries: [],
 };
 
 function Logo() {
@@ -502,6 +506,7 @@ export default function App() {
               { id: 'github', icon: Github },
               { id: 'documents', icon: FileText },
               { id: 'media', icon: LayoutGrid },
+              { id: 'brain', icon: BrainCircuit },
               { id: 'settings', icon: Settings2 },
             ] as const
           ).map((item) => (
@@ -676,31 +681,27 @@ export default function App() {
           </div>
         )}
         <main className={view === 'board' ? 'board-view' : ''}>
-          <div className="page-heading">
+          {view !== 'board' && <div className="page-heading">
             <div>
               <div className="eyebrow">
                 <span />
                 YOUR LOCAL COMMAND CENTER
               </div>
               <h1>
-                {view === 'board'
-                  ? 'Agent workspace'
-                  : view === 'agents'
-                    ? 'Agent connections'
-                    : view === 'reports'
-                      ? 'Execution reports'
-                      : viewNames[view]}
+                {view === 'agents'
+                  ? 'Agent connections'
+                  : view === 'reports'
+                    ? 'Execution reports'
+                    : viewNames[view]}
               </h1>
               <p>
-                {view === 'board'
-                  ? 'Queue tasks, inspect runs, and review agent output.'
-                  : view === 'agents'
-                    ? 'Manage connections, check availability, and give every agent a place.'
-                    : view === 'reports'
-                      ? 'Read what your agents found. Review the work. Decide what comes next.'
-                      : view === 'terminal'
-                        ? 'Connect securely to a remote shell without leaving your workspace.'
-                        : 'Configure and inspect your agent workspace.'}
+                {view === 'agents'
+                  ? 'Manage connections, check availability, and give every agent a place.'
+                  : view === 'reports'
+                    ? 'Read what your agents found. Review the work. Decide what comes next.'
+                    : view === 'terminal'
+                      ? 'Connect securely to a remote shell without leaving your workspace.'
+                      : 'Configure and inspect your agent workspace.'}
               </p>
             </div>
             <div className="heading-actions">
@@ -710,7 +711,7 @@ export default function App() {
                   Explore demo
                 </button>
               )}
-              {(view === 'board' || view === 'reports') && !demo && (
+              {view === 'reports' && !demo && (
                 <button className="button secondary" onClick={() => void autoAssign()}>
                   <Activity size={15} />
                   Auto-assign
@@ -722,22 +723,18 @@ export default function App() {
                   Check all agents
                 </button>
               )}
-              {view !== 'settings' && view !== 'github' && view !== 'schedules' && view !== 'documents' && view !== 'media' && view !== 'terminal' && (
+              {(view === 'reports' || view === 'agents') && (
                 <button
                   className="button primary"
-                  onClick={
-                    view === 'board' || view === 'reports'
-                      ? () => (demo ? sampleNotice() : setDialog({ kind: 'task' }))
-                      : addAgent
-                  }
+                  onClick={view === 'reports' ? () => (demo ? sampleNotice() : setDialog({ kind: 'task' })) : addAgent}
                 >
                   <Plus size={17} />
-                  {view === 'board' || view === 'reports' ? 'New task' : 'Add agent'}
+                  {view === 'reports' ? 'New task' : 'Add agent'}
                 </button>
               )}
             </div>
-          </div>
-          <section className="metrics" aria-label="Workspace overview">
+          </div>}
+          {view !== 'board' && <section className="metrics" aria-label="Workspace overview">
             <Metric
               label="AGENTS REACHABLE"
               value={`${online}`}
@@ -771,10 +768,94 @@ export default function App() {
               note="Reviewed and marked done"
               color="green"
             />
-          </section>
+          </section>}
 
           {view === 'board' && (
             <>
+              <div className="board-topbar">
+                <div className="board-topbar-left">
+                  <h2>Workspace</h2>
+                  <span className="count-badge">{state.tasks.filter((t) => t.status !== 'archived').length}</span>
+                  {online > 0 && <span className="board-stat-chip online">{online} online</span>}
+                  {running.length > 0 && <span className="board-stat-chip running">{running.length} running</span>}
+                  {needs.length > 0 && <span className="board-stat-chip needs">{needs.length} need you</span>}
+                  {!demo && <span className="board-stat-chip live"><span className="live-dot" />Live</span>}
+                </div>
+                <div className="board-topbar-right">
+                  <label className="search-field">
+                    <Search size={15} />
+                    <input
+                      aria-label="Search tasks"
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Search tasks..."
+                    />
+                    {search && (
+                      <button aria-label="Clear search" onClick={() => setSearch('')}>
+                        <X size={13} />
+                      </button>
+                    )}
+                  </label>
+                  <label className="filter-select">
+                    <Bot size={14} />
+                    <select
+                      aria-label="Filter by agent"
+                      value={agentFilter}
+                      onChange={(event) => setAgentFilter(event.target.value)}
+                    >
+                      <option value="all">All agents</option>
+                      <option value="unassigned">Unassigned</option>
+                      {state.agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>{agent.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="filter-select">
+                    <Settings2 size={13} />
+                    <select
+                      aria-label="Filter by priority"
+                      value={priorityFilter}
+                      onChange={(event) => setPriorityFilter(event.target.value)}
+                    >
+                      <option value="all">All priorities</option>
+                      <option value="high">High priority</option>
+                      <option value="medium">Medium priority</option>
+                      <option value="low">Low priority</option>
+                    </select>
+                  </label>
+                  <div className="view-switch" aria-label="Task layout">
+                    <button aria-label="Board view" aria-pressed={layout === 'board'} className={layout === 'board' ? 'active' : ''} onClick={() => setLayout('board')}>
+                      <LayoutGrid size={14} />
+                    </button>
+                    <button aria-label="List view" aria-pressed={layout === 'list'} className={layout === 'list' ? 'active' : ''} onClick={() => setLayout('list')}>
+                      <List size={15} />
+                    </button>
+                  </div>
+                  <button
+                    className={`text-button archive-toggle ${showArchived ? 'active' : ''}`}
+                    onClick={() => setShowArchived((v) => !v)}
+                    title={showArchived ? 'Back to active tasks' : 'Show archived tasks'}
+                  >
+                    <Archive size={13} />
+                    {showArchived ? 'Active' : `Archive${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
+                  </button>
+                  {(search || agentFilter !== 'all' || priorityFilter !== 'all' || showArchived) && (
+                    <button className="text-button" onClick={() => { setSearch(''); setAgentFilter('all'); setPriorityFilter('all'); setShowArchived(false); }}>
+                      Reset
+                    </button>
+                  )}
+                  {!demo && (
+                    <button className="button secondary small" onClick={() => void autoAssign()}>
+                      <Activity size={13} />
+                      Auto-assign
+                    </button>
+                  )}
+                  <button className="button primary small" onClick={() => (demo ? sampleNotice() : setDialog({ kind: 'task' }))}>
+                    <Plus size={15} />
+                    New task
+                  </button>
+                </div>
+              </div>
               <AttentionInbox items={needs} agents={state.agents} onOpen={openAttention} />
               <section className="agent-overview">
                 <div className="section-heading">
@@ -847,113 +928,6 @@ export default function App() {
                 </div>
               </section>
               <section className="board-section">
-                <div className="board-title-row">
-                  <div className="board-title">
-                    <h2>Task board</h2>
-                    <span className="count-badge">{state.tasks.length}</span>
-                    <span className="board-subtitle">The big picture, down to the details.</span>
-                  </div>
-                  <div className="view-switch" aria-label="Task layout">
-                    <button
-                      aria-label="Board view"
-                      aria-pressed={layout === 'board'}
-                      className={layout === 'board' ? 'active' : ''}
-                      onClick={() => setLayout('board')}
-                    >
-                      <LayoutGrid size={15} />
-                      <span>Board</span>
-                    </button>
-                    <button
-                      aria-label="List view"
-                      aria-pressed={layout === 'list'}
-                      className={layout === 'list' ? 'active' : ''}
-                      onClick={() => setLayout('list')}
-                    >
-                      <List size={16} />
-                      <span>List</span>
-                    </button>
-                  </div>
-                </div>
-                <div className="board-toolbar">
-                  <div className="board-filters">
-                    <label className="search-field">
-                      <Search size={16} />
-                      <input
-                        aria-label="Search tasks"
-                        value={search}
-                        onChange={(event) => setSearch(event.target.value)}
-                        placeholder="Search tasks..."
-                      />
-                      {search && (
-                        <button aria-label="Clear search" onClick={() => setSearch('')}>
-                          <X size={14} />
-                        </button>
-                      )}
-                    </label>
-                    <label className="filter-select">
-                      <Bot size={15} />
-                      <select
-                        aria-label="Filter by agent"
-                        value={agentFilter}
-                        onChange={(event) => setAgentFilter(event.target.value)}
-                      >
-                        <option value="all">All agents</option>
-                        <option value="unassigned">Unassigned</option>
-                        {state.agents.map((agent) => (
-                          <option key={agent.id} value={agent.id}>
-                            {agent.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="filter-select">
-                      <Settings2 size={14} />
-                      <select
-                        aria-label="Filter by priority"
-                        value={priorityFilter}
-                        onChange={(event) => setPriorityFilter(event.target.value)}
-                      >
-                        <option value="all">All priorities</option>
-                        <option value="high">High priority</option>
-                        <option value="medium">Medium priority</option>
-                        <option value="low">Low priority</option>
-                      </select>
-                    </label>
-                    {(search || agentFilter !== 'all' || priorityFilter !== 'all' || showArchived) && (
-                      <button
-                        className="text-button"
-                        onClick={() => {
-                          setSearch('');
-                          setAgentFilter('all');
-                          setPriorityFilter('all');
-                          setShowArchived(false);
-                        }}
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-                  <div className="board-hint-row">
-                    <button
-                      className={`text-button archive-toggle ${showArchived ? 'active' : ''}`}
-                      onClick={() => setShowArchived((v) => !v)}
-                      title={showArchived ? 'Back to active tasks' : 'Show archived tasks'}
-                    >
-                      <Archive size={13} />
-                      {showArchived ? 'Active tasks' : `Archive${archivedCount > 0 ? ` (${archivedCount})` : ''}`}
-                    </button>
-                    <span className="board-hint">
-                      {demo ? (
-                        'Read-only preview'
-                      ) : (
-                        <>
-                          <span className="live-dot" />
-                          Live updates
-                        </>
-                      )}
-                    </span>
-                  </div>
-                </div>
                 {!state.tasks.length && !search && (
                   <div className="onboarding">
                     <div className="onboarding-art">
@@ -1493,6 +1467,15 @@ export default function App() {
                 )}
               </aside>
             </div>
+          )}
+          {view === 'brain' && (
+            <BrainView
+              entries={state.brainEntries}
+              agents={state.agents}
+              tasks={state.tasks}
+              openaiConfigured={state.openaiConfigured}
+              request={request}
+            />
           )}
           {['schedules', 'documents', 'media', 'github', 'settings'].includes(view) &&
             (demo ? (

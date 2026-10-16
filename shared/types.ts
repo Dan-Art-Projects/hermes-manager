@@ -257,6 +257,22 @@ export interface Activity {
   kind: 'agent' | 'task' | 'system';
 }
 
+export type BrainEntryType = 'note' | 'link' | 'snippet' | 'insight' | 'task-summary';
+
+export interface BrainEntry {
+  id: string;
+  type: BrainEntryType;
+  title: string;
+  content: string;
+  url?: string;
+  tags: string[];
+  taskId?: string;
+  agentId?: string;
+  source: 'manual' | 'ai-extracted';
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppSnapshot {
   agents: Agent[];
   tasks: Task[];
@@ -270,6 +286,7 @@ export interface AppSnapshot {
   githubSyncs: GitHubSync[];
   openaiConfigured: boolean;
   huggingfaceConfigured: boolean;
+  brainEntries: BrainEntry[];
 }
 
 export interface AgentInput {
