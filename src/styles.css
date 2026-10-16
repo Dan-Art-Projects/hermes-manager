@@ -2958,6 +2958,24 @@ main {
   gap: 8px;
   font-weight: 600;
 }
+.export-dropdown { position: relative; display: inline-flex; }
+.export-trigger { display: flex; align-items: center; gap: 5px; }
+.export-menu {
+  display: none;
+  position: absolute; top: calc(100% + 4px); right: 0;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 4px; min-width: 180px;
+  z-index: 200; box-shadow: var(--shadow);
+}
+.export-dropdown:focus-within .export-menu,
+.export-dropdown:hover .export-menu { display: flex; flex-direction: column; }
+.export-menu button {
+  background: none; border: none; cursor: pointer; text-align: left;
+  padding: 7px 10px; border-radius: 5px;
+  font-size: 13px; color: var(--text-2); width: 100%;
+}
+.export-menu button:hover { background: var(--surface-3); color: var(--text); }
+.export-menu button:disabled { opacity: 0.45; cursor: not-allowed; }
 .report-text {
   max-height: 50vh;
   overflow: auto;

@@ -13,6 +13,8 @@ import {
 import { basename, extname, join, posix, resolve, sep } from 'node:path';
 import type { Client } from 'ssh2';
 import { z } from 'zod';
+import PDFDocument from 'pdfkit';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import { Store } from './store.ts';
 import { Vault, ApiError, type Sealed } from './vault.ts';
 import { listRemote, openSftp, readRemote, type RemoteFile } from './ssh.ts';
@@ -46,6 +48,7 @@ const formats: Record<string, [Artifact['kind'], string]> = {
   '.docx': ['document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
   '.xlsx': ['document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
   '.pptx': ['document', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+  '.html': ['document', 'text/html'],
 };
 const runner = z.enum(['hermes', 'claude', 'codex', 'opencode']);
 const scheduleChainStep = z.object({
@@ -140,6 +143,71 @@ async function fetchCatalog(key: string): Promise<CatalogModel[]> {
 /** Directory listing captured before a remote run, so collection never depends on clocks agreeing. */
 export type RemoteBaseline = Map<string, string>;
 const signature = (file: RemoteFile) => `${file.size}:${file.mtime}`;
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 80) || 'report';
+}
+
+async function generatePDF(title: string, body: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 60, info: { Title: title } });
+    const chunks: Buffer[] = [];
+    doc.on('data', (c: Buffer) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    doc.fontSize(18).font('Helvetica-Bold').text(title);
+    doc.moveDown(0.5);
+    doc.fontSize(11).font('Helvetica').text(body, { lineGap: 4, paragraphGap: 8 });
+    doc.end();
+  });
+}
+
+async function generateDocx(title: string, body: string): Promise<Buffer> {
+  const children: Paragraph[] = [
+    new Paragraph({ text: title, heading: HeadingLevel.TITLE }),
+    new Paragraph({}),
+  ];
+  let inCode = false;
+  for (const line of body.split('\n')) {
+    if (line.startsWith('```')) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode) {
+      children.push(
+        new Paragraph({ children: [new TextRun({ text: line, font: 'Courier New', size: 18 })] }),
+      );
+    } else if (line.startsWith('### ')) {
+      children.push(new Paragraph({ text: line.slice(4), heading: HeadingLevel.HEADING_3 }));
+    } else if (line.startsWith('## ')) {
+      children.push(new Paragraph({ text: line.slice(3), heading: HeadingLevel.HEADING_2 }));
+    } else if (line.startsWith('# ')) {
+      children.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1 }));
+    } else if (/^[-*] /.test(line)) {
+      children.push(new Paragraph({ text: line.slice(2), bullet: { level: 0 } }));
+    } else {
+      children.push(new Paragraph({ text: line }));
+    }
+  }
+  const doc = new Document({ sections: [{ children }] });
+  return Packer.toBuffer(doc);
+}
+
+function generateHTML(title: string, body: string): Buffer {
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return Buffer.from(
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>` +
+      `<style>body{font-family:system-ui;max-width:820px;margin:2rem auto;line-height:1.65}` +
+      `pre{white-space:pre-wrap;font-family:inherit}</style></head>` +
+      `<body><h1>${esc(title)}</h1><pre>${esc(body)}</pre></body></html>`,
+    'utf-8',
+  );
+}
 
 export function workspace(
   app: Express,
@@ -242,6 +310,43 @@ export function workspace(
     store.addActivity('system', `File "${item.name}" deleted from the library.`);
     changed();
     res.json({ ok: true });
+  });
+
+  app.post('/api/artifacts/from-report', async (req, res) => {
+    const input = z
+      .object({
+        taskId: z.string().uuid(),
+        format: z.enum(['md', 'txt', 'html', 'pdf', 'docx']),
+        filename: z.string().max(200).optional(),
+      })
+      .strict()
+      .parse(req.body);
+    const task = store.task(input.taskId);
+    if (!task) throw new ApiError(404, 'Task not found.');
+    if (!task.report) throw new ApiError(400, 'This task has no report yet.', 'NO_REPORT');
+    const agent = store.agent(task.agentId ?? '');
+    const agentName = agent?.name ?? 'Unassigned';
+    const sep2 = '='.repeat(Math.min(task.title.length, 80));
+    const body = `${task.title}\n${sep2}\n\nStatus: ${task.status}\nAgent: ${agentName}\nUpdated: ${task.updatedAt}\n\n${task.report}`;
+    const extMap: Record<string, string> = {
+      md: '.md', txt: '.txt', html: '.html', pdf: '.pdf', docx: '.docx',
+    };
+    const ext = extMap[input.format];
+    const name = input.filename ? `${input.filename}${ext}` : `${slugify(task.title)}-report${ext}`;
+    let bytes: Buffer;
+    if (input.format === 'pdf') {
+      bytes = await generatePDF(task.title, body);
+    } else if (input.format === 'docx') {
+      bytes = await generateDocx(task.title, body);
+    } else if (input.format === 'html') {
+      bytes = generateHTML(task.title, body);
+    } else {
+      bytes = Buffer.from(body, 'utf-8');
+    }
+    const artifact = addArtifact(name, task.id, bytes);
+    store.addActivity('system', `Report for "${task.title}" exported as ${input.format.toUpperCase()} and saved to the library.`);
+    changed();
+    res.status(201).json(artifact);
   });
 
   app.get('/api/schedules', (_req, res) => res.json(schedules()));

@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Bell,
   Check,
+  ChevronDown,
   Download,
   FileText,
   Play,
@@ -14,7 +15,7 @@ import {
   Terminal,
   Trash2,
 } from 'lucide-react';
-import { runnerNames, type Agent, type Runner, type Task, type TaskLog } from '../../shared/types';
+import { runnerNames, type Agent, type Artifact, type Runner, type Task, type TaskLog } from '../../shared/types';
 import { agentStyle, relativeTime, statusNames, statuses, type Request } from '../api';
 import { RunnerFields } from './Forms';
 import Modal from './Modal';
@@ -142,19 +143,30 @@ export default function TaskDetail({
       return;
     void action(`/tasks/${task.id}/run`, 'POST', undefined, () => setTab('output'));
   }
-  function download() {
-    const blob = new Blob(
-      [
-        `${task.title}\n${'='.repeat(task.title.length)}\n\nStatus: ${statusNames[task.status]}\nAgent: ${agents.find((a) => a.id === task.agentId)?.name ?? 'Unassigned'}\nUpdated: ${task.updatedAt}\n\n${task.report ?? ''}${task.error ? `\n\nError: ${task.error}` : ''}`,
-      ],
-      { type: 'text/plain;charset=utf-8' },
-    );
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `hermes-report-${task.id.slice(0, 8)}.txt`;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  async function exportReport(format: 'md' | 'txt' | 'html' | 'pdf' | 'docx') {
+    setBusy(true);
+    setError('');
+    try {
+      const artifact = await request<Artifact>('/artifacts/from-report', 'POST', {
+        taskId: task.id,
+        format,
+      });
+      const res = await fetch(`/api/artifacts/${artifact.id}/file?download=1`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = artifact.name;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      setNotice(`Saved to Documents as "${artifact.name}"`);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
   function forceStop() {
     if (!confirm('Force-stop this task? It will move to blocked. Any work already done by the agent may still be in progress on the remote host.'))
@@ -445,10 +457,28 @@ export default function TaskDetail({
                     <FileText size={17} />
                     Agent completion report
                   </span>
-                  <button className="button secondary small" onClick={download}>
-                    <Download size={14} />
-                    Export
-                  </button>
+                  <div className="export-dropdown">
+                    <button className="button secondary small export-trigger" disabled={busy}>
+                      <Download size={14} />
+                      Save to Documents
+                      <ChevronDown size={12} />
+                    </button>
+                    <div className="export-menu">
+                      {(['pdf', 'docx', 'md', 'txt', 'html'] as const).map((fmt) => (
+                        <button key={fmt} disabled={busy} onClick={() => void exportReport(fmt)}>
+                          {
+                            ({
+                              pdf: 'PDF',
+                              docx: 'Word Document (.docx)',
+                              md: 'Markdown',
+                              txt: 'Plain Text',
+                              html: 'HTML',
+                            } as const)[fmt]
+                          }
+                        </button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
                 <pre className="report-text">{task.report}</pre>
                 <p className="field-hint">
