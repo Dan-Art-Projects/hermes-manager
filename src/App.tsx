@@ -672,6 +672,15 @@ export default function App() {
             </button>
           </div>
         </header>
+        <StatsBar
+          online={online}
+          total={state.agents.length}
+          running={running.length}
+          needsCount={needs.length}
+          questionsCount={needs.filter((i) => i.kind === 'question').length}
+          reviewCount={review.length}
+          done={done.length}
+        />
         {demo && (
           <div className="demo-banner">
             <span>
@@ -752,42 +761,7 @@ export default function App() {
               )}
             </div>
           </div>}
-          {view !== 'board' && <section className="metrics" aria-label="Workspace overview">
-            <Metric
-              label="AGENTS REACHABLE"
-              value={`${online}`}
-              suffix={`/ ${state.agents.length}`}
-              icon={<Radio size={18} />}
-              note={state.agents.length ? 'Hermes availability' : 'Connect your first agent'}
-              color="green"
-            />
-            <Metric
-              label="IN PROGRESS"
-              value={`${running.length}`}
-              icon={<Activity size={19} />}
-              note={running.length ? 'Agents are on the job' : 'Ready when you are'}
-              color="blue"
-            />
-            <Metric
-              label="NEEDS YOU"
-              value={`${needs.length}`}
-              icon={<Bell size={18} />}
-              note={
-                needs.length
-                  ? `${needs.filter((i) => i.kind === 'question').length} question(s), ${review.length} to review`
-                  : 'Nothing waiting on you'
-              }
-              color="amber"
-            />
-            <Metric
-              label="COMPLETED"
-              value={`${done.length}`}
-              icon={<CheckCheck size={19} />}
-              note="Reviewed and marked done"
-              color="green"
-            />
-          </section>}
-
+  
           {view === 'board' && (
             <>
               <div className="board-topbar">
@@ -1750,36 +1724,56 @@ export default function App() {
   );
 }
 
-function Metric({
-  label,
-  value,
-  suffix,
-  icon,
-  note,
-  color,
+function StatsBar({
+  online,
+  total,
+  running,
+  needsCount,
+  questionsCount,
+  reviewCount,
+  done,
 }: {
-  label: string;
-  value: string;
-  suffix?: string;
-  icon: React.ReactNode;
-  note: string;
-  color: string;
+  online: number;
+  total: number;
+  running: number;
+  needsCount: number;
+  questionsCount: number;
+  reviewCount: number;
+  done: number;
 }) {
   return (
-    <article className="metric">
-      <div className="metric-top">
-        <span>{label}</span>
-        <span className={`metric-icon ${color}`}>{icon}</span>
+    <div className="stats-bar" aria-label="Workspace overview">
+      <div className={`stats-bar-item ${online === total && total > 0 ? 'green' : online > 0 ? 'amber' : ''}`}>
+        <Radio size={12} />
+        <span className="stats-bar-label">AGENTS</span>
+        <strong>{online}/{total}</strong>
+        <span className="stats-bar-note">reachable</span>
       </div>
-      <div className="metric-value">
-        {value}
-        <span>{suffix}</span>
+      <span className="stats-bar-sep" />
+      <div className={`stats-bar-item ${running > 0 ? 'blue' : ''}`}>
+        <Activity size={12} />
+        <span className="stats-bar-label">IN PROGRESS</span>
+        <strong>{running}</strong>
+        <span className="stats-bar-note">{running ? 'on the job' : 'ready'}</span>
       </div>
-      <div className="metric-note">
-        <span className={`metric-note-dot ${color}`} />
-        {note}
+      <span className="stats-bar-sep" />
+      <div className={`stats-bar-item ${needsCount > 0 ? 'amber' : ''}`}>
+        <Bell size={12} />
+        <span className="stats-bar-label">NEEDS YOU</span>
+        <strong>{needsCount}</strong>
+        {needsCount > 0 && (
+          <span className="stats-bar-note">{questionsCount} question{questionsCount !== 1 ? 's' : ''}, {reviewCount} to review</span>
+        )}
+        {!needsCount && <span className="stats-bar-note">all clear</span>}
       </div>
-    </article>
+      <span className="stats-bar-sep" />
+      <div className="stats-bar-item green">
+        <CheckCheck size={12} />
+        <span className="stats-bar-label">COMPLETED</span>
+        <strong>{done}</strong>
+        <span className="stats-bar-note">reviewed & done</span>
+      </div>
+    </div>
   );
 }
 function KeyIcon() {

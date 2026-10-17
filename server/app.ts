@@ -274,9 +274,29 @@ export function createManager(options: ManagerOptions = {}) {
     if (!task) throw new ApiError(404, 'Task not found.');
     return task;
   };
+  const buildBrainEntrySimple = (task: Task): BrainEntry => {
+    const now = new Date().toISOString();
+    const report = task.report ?? '';
+    const firstPara = report.split(/\n\n+/)[0]?.slice(0, 600) ?? '';
+    const words = task.title.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+    const tags = [...new Set(words)].slice(0, 5);
+    return {
+      id: randomUUID(),
+      type: 'task-summary',
+      title: task.title.slice(0, 200),
+      content: firstPara || report.slice(0, 600),
+      tags,
+      taskId: task.id,
+      agentId: task.agentId ?? undefined,
+      source: 'auto',
+      createdAt: now,
+      updatedAt: now,
+    };
+  };
+
   const extractBrainEntry = async (task: Task): Promise<BrainEntry> => {
     const sealed = store.openAIKeySealed();
-    if (!sealed) throw new ApiError(409, 'OpenAI key not configured.');
+    if (!sealed) return buildBrainEntrySimple(task);
     const apiKey = vault.decryptOpenAIKey(sealed);
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -294,13 +314,11 @@ export function createManager(options: ManagerOptions = {}) {
       }),
       signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) {
-      const err = await response.text().catch(() => '');
-      throw new ApiError(502, `OpenAI error: ${err.slice(0, 200)}`);
-    }
+    if (!response.ok) return buildBrainEntrySimple(task);
     const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
     const raw = data.choices?.[0]?.message?.content ?? '{}';
-    const parsed = JSON.parse(raw) as { title?: string; insight?: string; tags?: string[] };
+    let parsed: { title?: string; insight?: string; tags?: string[] } = {};
+    try { parsed = JSON.parse(raw); } catch { return buildBrainEntrySimple(task); }
     const now = new Date().toISOString();
     return {
       id: randomUUID(),
@@ -577,7 +595,7 @@ export function createManager(options: ManagerOptions = {}) {
         turns: report ? addTurn(current.turns, 'agent', report) : current.turns,
       };
       store.saveTask(updated);
-      if (!waiting && outcome.success && updated.report && store.openAIKeySealed()) {
+      if (!waiting && outcome.success && updated.report) {
         void (async () => {
           try {
             if (store.brainEntries().some((e) => e.taskId === updated.id)) return;

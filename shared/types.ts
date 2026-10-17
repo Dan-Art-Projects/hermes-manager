@@ -288,7 +288,7 @@ export interface BrainEntry {
   tags: string[];
   taskId?: string;
   agentId?: string;
-  source: 'manual' | 'ai-extracted';
+  source: 'manual' | 'ai-extracted' | 'auto';
   createdAt: string;
   updatedAt: string;
 }
