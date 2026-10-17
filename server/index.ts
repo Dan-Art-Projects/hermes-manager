@@ -9,7 +9,7 @@ export async function start(options: ManagerOptions = {}) {
   try {
     await new Promise<void>((resolveReady, reject) => {
       manager.server.once('error', reject);
-      manager.server.listen(manager.port, '127.0.0.1', () => {
+      manager.server.listen(manager.port, '0.0.0.0', () => {
         manager.server.off('error', reject);
         resolveReady();
       });

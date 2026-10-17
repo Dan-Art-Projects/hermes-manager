@@ -27,6 +27,7 @@ import {
   MoreHorizontal,
   Network,
   Plus,
+  Puzzle,
   Radio,
   RefreshCw,
   Search,
@@ -64,9 +65,10 @@ import { Schedules, Library } from './components/Workspace';
 import GitHub from './components/GitHub';
 import Settings, { type Theme } from './components/Settings';
 import BrainView from './components/Brain';
+import SkillsView from './components/Skills';
 
 const TerminalPanel = lazy(() => import('./components/TerminalPanel'));
-type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'brain' | 'settings';
+type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'brain' | 'skills' | 'settings';
 type Dialog =
   | { kind: 'agent'; agent?: Agent }
   | { kind: 'task'; status?: TaskStatus }
@@ -85,6 +87,7 @@ const viewNames: Record<View, string> = {
   media: 'Media gallery',
   github: 'GitHub',
   brain: 'Second Brain',
+  skills: 'Skills',
   settings: 'Settings',
 };
 const blank: AppSnapshot = {
@@ -101,6 +104,8 @@ const blank: AppSnapshot = {
   openaiConfigured: false,
   huggingfaceConfigured: false,
   brainEntries: [],
+  skills: [],
+  roles: [],
 };
 
 function Logo() {
@@ -411,6 +416,18 @@ export default function App() {
     }
   }
 
+  async function archiveAllDone() {
+    if (demo) return;
+    const doneIds = state.tasks.filter((t) => t.status === 'done').map((t) => t.id);
+    if (!doneIds.length) return;
+    try {
+      await Promise.all(doneIds.map((id) => request(`/tasks/${id}`, 'PATCH', { status: 'archived' })));
+      setToast({ message: `Archived ${doneIds.length} task${doneIds.length > 1 ? 's' : ''}.` });
+    } catch (error) {
+      setToast({ message: (error as Error).message, error: true });
+    }
+  }
+
   async function moveTask(event: DragEvent, status: TaskStatus) {
     event.preventDefault();
     const id = event.dataTransfer.getData('text/plain');
@@ -507,6 +524,7 @@ export default function App() {
               { id: 'documents', icon: FileText },
               { id: 'media', icon: LayoutGrid },
               { id: 'brain', icon: BrainCircuit },
+              { id: 'skills', icon: Puzzle },
               { id: 'settings', icon: Settings2 },
             ] as const
           ).map((item) => (
@@ -976,6 +994,16 @@ export default function App() {
                             </span>
                             <h3>{statusNames[status]}</h3>
                             <span className="column-count">{column.length}</span>
+                            {status === 'done' && column.length > 0 && (
+                              <button
+                                className="icon-button"
+                                aria-label="Archive all done tasks"
+                                title="Archive all done"
+                                onClick={() => void archiveAllDone()}
+                              >
+                                <CheckCheck size={13} />
+                              </button>
+                            )}
                             {status !== 'running' && status !== 'waiting' && (
                               <button
                                 className="icon-button"
@@ -1477,6 +1505,15 @@ export default function App() {
               request={request}
             />
           )}
+          {view === 'skills' && (
+            <SkillsView
+              skills={state.skills}
+              roles={state.roles}
+              agents={state.agents}
+              openaiConfigured={state.openaiConfigured}
+              request={request}
+            />
+          )}
           {['schedules', 'documents', 'media', 'github', 'settings'].includes(view) &&
             (demo ? (
               <p>Exit demo to manage schedules, files, settings, and connected accounts.</p>
@@ -1579,6 +1616,8 @@ export default function App() {
           agents={state.agents}
           sshKeys={state.sshKeys}
           openaiConfigured={state.openaiConfigured}
+          roles={state.roles}
+          librarySkills={state.skills}
           request={request}
           onClose={() => setDialog(null)}
           onSaved={(agent) => {

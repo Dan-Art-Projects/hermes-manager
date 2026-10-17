@@ -159,4 +159,6 @@ export const demoState: AppSnapshot = {
   openaiConfigured: false,
   huggingfaceConfigured: false,
   brainEntries: [],
+  skills: [],
+  roles: [],
 };

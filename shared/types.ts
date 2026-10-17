@@ -23,6 +23,26 @@ export interface AgentSkill {
   source?: string;
   installedAt: string;
 }
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+  category?: string;
+  source?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  description?: string;
+  skillIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
 export type TaskStatus = 'backlog' | 'ready' | 'running' | 'waiting' | 'review' | 'done' | 'blocked' | 'archived';
 export type Priority = 'low' | 'medium' | 'high';
 export type Runner = 'hermes' | 'opencode' | 'codex' | 'claude';
@@ -287,6 +307,8 @@ export interface AppSnapshot {
   openaiConfigured: boolean;
   huggingfaceConfigured: boolean;
   brainEntries: BrainEntry[];
+  skills: Skill[];
+  roles: Role[];
 }
 
 export interface AgentInput {

@@ -24,7 +24,9 @@ import {
   type AgentInput,
   type AgentSkill,
   type AppSnapshot,
+  type Role,
   type Runner,
+  type Skill,
   type SshKey,
   type Task,
   type TaskStatus,
@@ -283,6 +285,8 @@ export function AgentModal({
   agents = [],
   sshKeys = [],
   openaiConfigured = false,
+  roles = [],
+  librarySkills = [],
   request,
   onClose,
   onSaved,
@@ -292,6 +296,8 @@ export function AgentModal({
   agents?: Agent[];
   sshKeys?: SshKey[];
   openaiConfigured?: boolean;
+  roles?: Role[];
+  librarySkills?: Skill[];
   request: Request;
   onClose: () => void;
   onSaved: (agent: Agent) => void;
@@ -303,6 +309,7 @@ export function AgentModal({
   const [model, setModel] = useState(agent?.model ?? '');
   const [provider, setProvider] = useState(agent?.provider ?? '');
   const [role, setRole] = useState(agent?.role ?? '');
+  const [roleSkillsBanner, setRoleSkillsBanner] = useState<Role | null>(null);
   const [capabilities, setCapabilities] = useState<string[]>(agent?.capabilities ?? []);
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '');
   const [generating, setGenerating] = useState(false);
@@ -820,14 +827,64 @@ export function AgentModal({
             </label>
             <label>
               Role <span className="optional">optional</span>
-              <select name="role" value={role} onChange={(e) => setRole(e.target.value)}>
+              <select
+                name="role"
+                value={role}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setRole(v);
+                  const matched = roles.find((r) => r.name.toLowerCase() === v.toLowerCase() || r.name === v);
+                  setRoleSkillsBanner(matched && matched.skillIds.length > 0 ? matched : null);
+                }}
+              >
                 <option value="">General (no specific role)</option>
                 {agentRoles.map((r) => (
                   <option key={r.value} value={r.value}>{r.label}</option>
                 ))}
+                {roles.filter((r) => !agentRoles.some((ar) => ar.value === r.name.toLowerCase())).map((r) => (
+                  <option key={r.id} value={r.name}>{r.name}</option>
+                ))}
               </select>
               <span className="field-hint">Used for task routing and agent skill suggestions.</span>
             </label>
+            {roleSkillsBanner && (() => {
+              const bannerSkills = roleSkillsBanner.skillIds
+                .map((id) => librarySkills.find((s) => s.id === id))
+                .filter(Boolean) as Skill[];
+              if (!bannerSkills.length) return null;
+              const alreadyHave = new Set((agent?.skills ?? []).map((s) => s.source?.replace('library:', '')));
+              const toInstall = bannerSkills.filter((s) => !alreadyHave.has(s.id));
+              if (!toInstall.length) return null;
+              return (
+                <div className="role-skills-banner">
+                  <span>
+                    <strong>{roleSkillsBanner.name}</strong> has {toInstall.length} skill{toInstall.length > 1 ? 's' : ''}: {toInstall.map((s) => s.name).join(', ')}
+                  </span>
+                  <button
+                    type="button"
+                    className="button primary small"
+                    onClick={() => {
+                      const now = new Date().toISOString();
+                      const newSkills: AgentSkill[] = toInstall.map((s) => ({
+                        id: crypto.randomUUID(),
+                        name: s.name,
+                        description: s.description,
+                        content: s.content,
+                        source: `library:${s.id}`,
+                        installedAt: now,
+                      }));
+                      setSkills((prev) => [...prev, ...newSkills]);
+                      setRoleSkillsBanner(null);
+                    }}
+                  >
+                    Add skills
+                  </button>
+                  <button type="button" className="icon-button" onClick={() => setRoleSkillsBanner(null)}>
+                    <X size={14} />
+                  </button>
+                </div>
+              );
+            })()}
             <label>
               Capabilities <span className="optional">optional</span>
               <TagInput

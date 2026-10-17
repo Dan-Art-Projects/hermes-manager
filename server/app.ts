@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { isIP } from 'node:net';
+import { networkInterfaces } from 'node:os';
 import { isAbsolute, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -22,7 +23,9 @@ import {
   type Priority,
   type Runner,
   type ServerEvent,
+  type Skill,
   type SshKey,
+  type Role,
   type Task,
   type TaskLog,
   type Turn,
@@ -191,8 +194,17 @@ export function createManager(options: ManagerOptions = {}) {
   const jobs = new Set<Promise<unknown>>();
   const pendingHostKeys = new Map<string, { host: string; port: number; fingerprint: string; at: number }>();
   let closing = false;
+  const lanIPs = Object.values(networkInterfaces())
+    .flat()
+    .filter((iface) => iface && !iface.internal && iface.family === 'IPv4')
+    .map((iface) => iface!.address);
   const authorities = new Set(
-    [port, 5173].flatMap((value) => [`127.0.0.1:${value}`, `localhost:${value}`, `[::1]:${value}`]),
+    [port, 5173].flatMap((value) => [
+      `127.0.0.1:${value}`,
+      `localhost:${value}`,
+      `[::1]:${value}`,
+      ...lanIPs.map((ip) => `${ip}:${value}`),
+    ]),
   );
   const origins = new Set([...authorities].map((authority) => `http://${authority}`));
 
@@ -231,6 +243,8 @@ export function createManager(options: ManagerOptions = {}) {
     openaiConfigured: !!store.openAIKeySealed(),
     huggingfaceConfigured: !!store.huggingFaceKeySealed(),
     brainEntries: store.brainEntries(),
+    skills: store.skills(),
+    roles: store.roles(),
   });
   const send = (ws: WebSocket, value: unknown) => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -954,6 +968,134 @@ export function createManager(options: ManagerOptions = {}) {
     const agent = getAgent(req.params.id);
     const updated: Agent = { ...agent, skills: (agent.skills ?? []).filter((s) => s.id !== req.params.skillId) };
     store.saveAgent(updated);
+    changed();
+    res.json({ ok: true });
+  });
+
+  // ── Skill library ────────────────────────────────────────────────────────────
+
+  app.get('/api/skills', (_req, res) => {
+    res.json(store.skills());
+  });
+
+  app.post('/api/skills', (req, res) => {
+    const { content, source } = z
+      .object({ content: z.string().min(1).max(128 * 1024), source: z.string().max(2048).optional() })
+      .strict()
+      .parse(req.body);
+    const { name, description } = parseSkillMd(content);
+    const category = content.match(/^category:\s*(.+)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, '') ?? undefined;
+    const now = new Date().toISOString();
+    const skill: Skill = { id: randomUUID(), name, description, content, category, source, createdAt: now, updatedAt: now };
+    store.saveSkill(skill);
+    changed();
+    res.status(201).json(skill);
+  });
+
+  app.post('/api/skills/generate', async (req, res) => {
+    const sealed = store.openAIKeySealed();
+    if (!sealed) throw new ApiError(409, 'OpenAI key not configured.');
+    const { description } = z.object({ description: z.string().min(1).max(2000) }).strict().parse(req.body);
+    const apiKey = vault.decryptOpenAIKey(sealed);
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        max_tokens: 1000,
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are an expert at writing agent skill definitions. Generate a SKILL.md file with YAML frontmatter and detailed instructions. The skill will be prepended to an AI agent\'s task prompt. Be specific, actionable, and concise. Use markdown for structure.',
+          },
+          {
+            role: 'user',
+            content: `Write a SKILL.md for the following skill:\n\n${description}\n\nFormat:\n---\nname: "Skill Name"\ndescription: "One-line summary"\ncategory: "developer|marketing|writer|analyst|devops|security|general"\n---\n\n# Skill Name\n\n[2-4 paragraphs of clear, actionable instructions for the agent]`,
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) {
+      const err = await response.text().catch(() => '');
+      throw new ApiError(502, `OpenAI error: ${err.slice(0, 200)}`);
+    }
+    const data = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+    const content = data.choices?.[0]?.message?.content ?? '';
+    if (!content) throw new ApiError(502, 'OpenAI returned an empty response.');
+    res.json({ content });
+  });
+
+  app.post('/api/skills/fetch', async (req, res) => {
+    const { url, source } = z.object({ url: z.string().url().max(2048), source: z.string().max(2048).optional() }).parse(req.body);
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new ApiError(502, `Could not fetch skill: ${response.status}`);
+    const content = await response.text();
+    const { name, description } = parseSkillMd(content);
+    const category = content.match(/^category:\s*(.+)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, '') ?? undefined;
+    const now = new Date().toISOString();
+    const skill: Skill = { id: randomUUID(), name, description, content, category, source: source ?? url, createdAt: now, updatedAt: now };
+    store.saveSkill(skill);
+    changed();
+    res.status(201).json(skill);
+  });
+
+  app.put('/api/skills/:id', (req, res) => {
+    const existing = store.skill(req.params.id);
+    if (!existing) throw new ApiError(404, 'Skill not found.');
+    const { content, source } = z
+      .object({ content: z.string().min(1).max(128 * 1024), source: z.string().max(2048).optional() })
+      .strict()
+      .parse(req.body);
+    const { name, description } = parseSkillMd(content);
+    const category = content.match(/^category:\s*(.+)$/m)?.[1]?.trim().replace(/^['"]|['"]$/g, '') ?? undefined;
+    const updated: Skill = { ...existing, name, description, content, category, source: source ?? existing.source, updatedAt: new Date().toISOString() };
+    store.saveSkill(updated);
+    changed();
+    res.json(updated);
+  });
+
+  app.delete('/api/skills/:id', (req, res) => {
+    if (!store.skill(req.params.id)) throw new ApiError(404, 'Skill not found.');
+    store.deleteSkill(req.params.id);
+    changed();
+    res.json({ ok: true });
+  });
+
+  // ── Roles ──────────────────────────────────────────────────────────────────
+  const roleFields = z.object({
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).optional(),
+    skillIds: z.array(z.string()).max(50).default([]),
+  });
+
+  app.get('/api/roles', (_req, res) => {
+    res.json(store.roles());
+  });
+
+  app.post('/api/roles', (req, res) => {
+    const input = roleFields.parse(req.body);
+    const now = new Date().toISOString();
+    const role: Role = { id: randomUUID(), ...input, createdAt: now, updatedAt: now };
+    store.saveRole(role);
+    changed();
+    res.status(201).json(role);
+  });
+
+  app.put('/api/roles/:id', (req, res) => {
+    const existing = store.role(req.params.id);
+    if (!existing) throw new ApiError(404, 'Role not found.');
+    const input = roleFields.parse(req.body);
+    const updated: Role = { ...existing, ...input, updatedAt: new Date().toISOString() };
+    store.saveRole(updated);
+    changed();
+    res.json(updated);
+  });
+
+  app.delete('/api/roles/:id', (req, res) => {
+    if (!store.role(req.params.id)) throw new ApiError(404, 'Role not found.');
+    store.deleteRole(req.params.id);
     changed();
     res.json({ ok: true });
   });

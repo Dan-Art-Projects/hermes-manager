@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { Activity, Agent, BrainEntry, GitHubSync, SshKey, Task, TaskLog } from '../shared/types.ts';
+import type { Activity, Agent, BrainEntry, GitHubSync, Role, Skill, SshKey, Task, TaskLog } from '../shared/types.ts';
 import type { Sealed, VaultRecord } from './vault.ts';
 
 export const LOG_LIMIT = 2000;
@@ -36,6 +36,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS ssh_keys (id TEXT PRIMARY KEY, data TEXT NOT NULL, key_data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS brain_entries (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS brain_entries_ts ON brain_entries(created_at DESC);
+      CREATE TABLE IF NOT EXISTS skills (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS skills_ts ON skills(created_at DESC);
+      CREATE TABLE IF NOT EXISTS roles (id TEXT PRIMARY KEY, data TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS roles_ts ON roles(created_at DESC);
       PRAGMA user_version = 1;
       `);
       for (const agent of this.agents()) {
@@ -303,6 +307,56 @@ export class Store {
 
   deleteBrainEntry(id: string): void {
     this.db.prepare('DELETE FROM brain_entries WHERE id = ?').run(id);
+  }
+
+  skills(): Skill[] {
+    return this.db
+      .prepare('SELECT data FROM skills ORDER BY created_at DESC')
+      .all()
+      .map((row) => JSON.parse(row.data as string) as Skill);
+  }
+
+  skill(id: string): Skill | undefined {
+    const row = this.db.prepare('SELECT data FROM skills WHERE id = ?').get(id);
+    return row ? (JSON.parse(row.data as string) as Skill) : undefined;
+  }
+
+  saveSkill(skill: Skill): void {
+    this.db
+      .prepare(
+        `INSERT INTO skills(id, data, created_at) VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+      )
+      .run(skill.id, JSON.stringify(skill), skill.createdAt);
+  }
+
+  deleteSkill(id: string): void {
+    this.db.prepare('DELETE FROM skills WHERE id = ?').run(id);
+  }
+
+  roles(): Role[] {
+    return this.db
+      .prepare('SELECT data FROM roles ORDER BY created_at DESC')
+      .all()
+      .map((row) => JSON.parse(row.data as string) as Role);
+  }
+
+  role(id: string): Role | undefined {
+    const row = this.db.prepare('SELECT data FROM roles WHERE id = ?').get(id);
+    return row ? (JSON.parse(row.data as string) as Role) : undefined;
+  }
+
+  saveRole(role: Role): void {
+    this.db
+      .prepare(
+        `INSERT INTO roles(id, data, created_at) VALUES (?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET data = excluded.data`,
+      )
+      .run(role.id, JSON.stringify(role), role.createdAt);
+  }
+
+  deleteRole(id: string): void {
+    this.db.prepare('DELETE FROM roles WHERE id = ?').run(id);
   }
 
   close(): void {

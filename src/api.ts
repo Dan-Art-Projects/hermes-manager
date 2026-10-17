@@ -34,6 +34,8 @@ function normalize(snapshot: AppSnapshot): AppSnapshot {
     openaiConfigured: snapshot.openaiConfigured ?? false,
     huggingfaceConfigured: snapshot.huggingfaceConfigured ?? false,
     brainEntries: snapshot.brainEntries ?? [],
+    skills: snapshot.skills ?? [],
+    roles: snapshot.roles ?? [],
   };
 }
 
