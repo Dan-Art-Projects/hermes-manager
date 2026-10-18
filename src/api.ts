@@ -36,6 +36,8 @@ function normalize(snapshot: AppSnapshot): AppSnapshot {
     brainEntries: snapshot.brainEntries ?? [],
     skills: snapshot.skills ?? [],
     roles: snapshot.roles ?? [],
+    agentApiUrl: snapshot.agentApiUrl ?? '',
+    agentToken: snapshot.agentToken ?? '',
   };
 }
 

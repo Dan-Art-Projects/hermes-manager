@@ -161,4 +161,6 @@ export const demoState: AppSnapshot = {
   brainEntries: [],
   skills: [],
   roles: [],
+  agentApiUrl: '',
+  agentToken: '',
 };

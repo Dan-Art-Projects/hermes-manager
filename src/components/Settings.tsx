@@ -390,6 +390,7 @@ function SshKeysTab({ sshKeys, request }: { sshKeys: SshKey[]; request: Request 
 function ApiKeysTab({ request, state }: { request: Request; state: AppSnapshot }) {
   return (
     <div className="settings-section">
+      <AgentApiCard state={state} />
       <NousKeyCard request={request} />
       <GitHubKeyCard request={request} state={state} />
       <OpenAIKeyCard request={request} />
@@ -632,6 +633,48 @@ function HuggingFaceKeyCard({ request }: { request: Request }) {
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+function AgentApiCard({ state }: { state: AppSnapshot }) {
+  const [copied, setCopied] = useState('');
+  function copy(value: string, label: string) {
+    void navigator.clipboard.writeText(value).then(() => {
+      setCopied(label);
+      setTimeout(() => setCopied(''), 2000);
+    });
+  }
+  if (!state.agentToken) return null;
+  const curlExample = `curl -s -X POST ${state.agentApiUrl}/brain \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${state.agentToken}" \\
+  -d '{"type":"insight","title":"Short title","content":"Details...","tags":["tag"]}'`;
+  return (
+    <div className="settings-card">
+      <h3><KeyRound size={16} /> Agent API</h3>
+      <p className="settings-hint">
+        Agents can call these endpoints during task execution to write to the Second Brain and add task notes.
+        The token and URL are automatically injected into every task's context.
+      </p>
+      <div className="agent-api-row">
+        <span className="agent-api-label">API URL</span>
+        <code className="agent-api-value">{state.agentApiUrl}</code>
+        <button className="button ghost small" onClick={() => copy(state.agentApiUrl, 'url')}>
+          {copied === 'url' ? <Check size={13} /> : 'Copy'}
+        </button>
+      </div>
+      <div className="agent-api-row">
+        <span className="agent-api-label">Token</span>
+        <code className="agent-api-value token-blur">{state.agentToken}</code>
+        <button className="button ghost small" onClick={() => copy(state.agentToken, 'token')}>
+          {copied === 'token' ? <Check size={13} /> : 'Copy'}
+        </button>
+      </div>
+      <details className="agent-api-example">
+        <summary>Example curl</summary>
+        <pre>{curlExample}</pre>
+      </details>
     </div>
   );
 }

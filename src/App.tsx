@@ -106,6 +106,8 @@ const blank: AppSnapshot = {
   brainEntries: [],
   skills: [],
   roles: [],
+  agentApiUrl: '',
+  agentToken: '',
 };
 
 function Logo() {

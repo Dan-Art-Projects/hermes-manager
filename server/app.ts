@@ -185,6 +185,13 @@ export function createManager(options: ManagerOptions = {}) {
   const store = new Store(resolve(options.dataDir ?? process.env.HERMES_MANAGER_DATA_DIR ?? 'data'));
   const vault = new Vault(store);
   const csrfToken = randomBytes(32).toString('hex');
+  const agentToken = (() => {
+    const existing = store.setting<string>('agent-token', '');
+    if (existing) return existing;
+    const token = randomBytes(32).toString('hex');
+    store.setSetting('agent-token', token);
+    return token;
+  })();
   const app = express();
   const server = createServer(app);
   const events = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false });
@@ -245,6 +252,8 @@ export function createManager(options: ManagerOptions = {}) {
     brainEntries: store.brainEntries(),
     skills: store.skills(),
     roles: store.roles(),
+    agentApiUrl: `http://${lanIPs[0] ?? '127.0.0.1'}:${port}/api/agent`,
+    agentToken,
   });
   const send = (ws: WebSocket, value: unknown) => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -495,6 +504,10 @@ export function createManager(options: ManagerOptions = {}) {
     const agentContext: string[] = [];
     if (agent.systemPrompt) agentContext.push(`[Agent Instructions]\n${agent.systemPrompt}`);
     for (const skill of agent.skills ?? []) agentContext.push(`[Skill: ${skill.name}]\n${skill.content}`);
+    const managerUrl = `http://${lanIPs[0] ?? '127.0.0.1'}:${port}`;
+    agentContext.push(
+      `[Hermes Manager API]\nYou can call the manager during this task to store insights and notes.\n\nBase URL: ${managerUrl}\nToken: ${agentToken}\nTask ID: ${task.id}\n\nStore a brain entry (use for key findings, decisions, code snippets, or links discovered):\n  curl -s -X POST ${managerUrl}/api/agent/brain \\\n    -H "Content-Type: application/json" \\\n    -H "Authorization: Bearer ${agentToken}" \\\n    -d '{"type":"insight","title":"<8 words max>","content":"<detail>","tags":["tag1"],"taskId":"${task.id}"}'\n\nAdd a note to this task:\n  curl -s -X POST ${managerUrl}/api/agent/tasks/${task.id}/note \\\n    -H "Content-Type: application/json" \\\n    -H "Authorization: Bearer ${agentToken}" \\\n    -d '{"message":"<note text>"}'\n\nEntry types: "insight" (key finding/decision), "note" (general), "snippet" (code/config), "link" (URL), "task-summary" (overall outcome).`,
+    );
     const original = agentContext.length ? `${agentContext.join('\n\n')}\n\n${taskBody}` : taskBody;
     const prompt = !followUp
       ? original
@@ -693,6 +706,12 @@ export function createManager(options: ManagerOptions = {}) {
     /^[a-f0-9]{64}$/.test(token) &&
     timingSafeEqual(Buffer.from(token), Buffer.from(csrfToken));
 
+  const agentTokenMatches = (req: IncomingMessage) => {
+    const auth = (req.headers as Record<string, string>).authorization ?? '';
+    const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    return token.length === 64 && timingSafeEqual(Buffer.from(token), Buffer.from(agentToken));
+  };
+
   app.disable('x-powered-by');
   app.set('trust proxy', false);
   app.use((req, res, next) => {
@@ -703,6 +722,17 @@ export function createManager(options: ManagerOptions = {}) {
       'Content-Security-Policy',
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     );
+    // Agent API: Bearer token bypasses origin/CSRF checks — requests come from remote machines
+    if (req.path.startsWith('/api/agent/')) {
+      if (!agentTokenMatches(req)) {
+        next(new ApiError(403, 'Invalid agent token.', 'AGENT_TOKEN_REJECTED'));
+        return;
+      }
+      if (closing) { next(new ApiError(503, 'Manager is shutting down.')); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      next();
+      return;
+    }
     if (!requestAllowed(req)) {
       next(new ApiError(403, 'Only local manager requests are allowed.', 'ORIGIN_REJECTED'));
       return;
@@ -1118,6 +1148,42 @@ export function createManager(options: ManagerOptions = {}) {
     res.json({ ok: true });
   });
 
+  // ── Agent API (Bearer-token auth, no CSRF) ──────────────────────────────────
+  const agentBrainInput = z.object({
+    type: z.enum(['note', 'link', 'snippet', 'insight', 'task-summary']).default('note'),
+    title: z.string().min(1).max(200),
+    content: z.string().max(10000).default(''),
+    url: z.string().url().max(2048).optional(),
+    tags: z.array(z.string().max(50)).max(20).optional(),
+    taskId: z.string().optional(),
+    agentId: z.string().optional(),
+  });
+
+  app.post('/api/agent/brain', express.json({ limit: '64kb', strict: true }), (req, res) => {
+    if (store.brainEntries().length >= 10000) throw new ApiError(409, 'Brain entry limit reached (10000).');
+    const input = agentBrainInput.parse(req.body);
+    const now = new Date().toISOString();
+    const entry: BrainEntry = {
+      ...input,
+      id: randomUUID(),
+      tags: input.tags ?? [],
+      source: 'auto',
+      createdAt: now,
+      updatedAt: now,
+    };
+    store.saveBrainEntry(entry);
+    changed();
+    res.status(201).json(entry);
+  });
+
+  app.post('/api/agent/tasks/:id/note', express.json({ limit: '64kb', strict: true }), (req, res) => {
+    const task = getTask(req.params.id);
+    const { message } = z.object({ message: z.string().min(1).max(4096) }).parse(req.body);
+    log(task.id, 'system', `[Agent note] ${message}`);
+    res.json({ ok: true });
+  });
+
+  // ── Brain (browser UI) ───────────────────────────────────────────────────────
   const brainEntryFields = z.object({
     type: z.enum(['note', 'link', 'snippet', 'insight', 'task-summary']),
     title: z.string().min(1).max(200),

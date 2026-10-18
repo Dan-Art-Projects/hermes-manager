@@ -309,6 +309,8 @@ export interface AppSnapshot {
   brainEntries: BrainEntry[];
   skills: Skill[];
   roles: Role[];
+  agentApiUrl: string;
+  agentToken: string;
 }
 
 export interface AgentInput {
