@@ -138,6 +138,8 @@ export interface Task {
   exitCode?: number;
   error?: string;
   waitingReason?: string;
+  tokensIn?: number;
+  tokensOut?: number;
   tags?: string[];
   /** Links tasks that were broadcast together as a parallel group. */
   groupId?: string;

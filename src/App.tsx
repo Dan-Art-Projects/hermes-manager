@@ -3,6 +3,7 @@ import {
   Activity,
   Archive,
   ArrowDown,
+  BarChart2,
   Bell,
   BellOff,
   BrainCircuit,
@@ -66,9 +67,10 @@ import GitHub from './components/GitHub';
 import Settings, { type Theme } from './components/Settings';
 import BrainView from './components/Brain';
 import SkillsView from './components/Skills';
+import AnalyticsView from './components/Analytics';
 
 const TerminalPanel = lazy(() => import('./components/TerminalPanel'));
-type View = 'board' | 'agents' | 'reports' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'brain' | 'skills' | 'settings';
+type View = 'board' | 'agents' | 'reports' | 'analytics' | 'terminal' | 'schedules' | 'documents' | 'media' | 'github' | 'brain' | 'skills' | 'settings';
 type Dialog =
   | { kind: 'agent'; agent?: Agent }
   | { kind: 'task'; status?: TaskStatus }
@@ -81,6 +83,7 @@ const viewNames: Record<View, string> = {
   board: 'Task board',
   agents: 'Agents',
   reports: 'Reports',
+  analytics: 'Analytics',
   terminal: 'Terminal',
   schedules: 'Schedules',
   documents: 'Documents',
@@ -520,6 +523,7 @@ export default function App() {
               { id: 'board', icon: FolderKanban },
               { id: 'agents', icon: Bot },
               { id: 'reports', icon: FileText },
+              { id: 'analytics', icon: BarChart2 },
               { id: 'terminal', icon: Terminal },
               { id: 'schedules', icon: Clock3 },
               { id: 'github', icon: Github },
@@ -1471,6 +1475,9 @@ export default function App() {
                 )}
               </aside>
             </div>
+          )}
+          {view === 'analytics' && (
+            <AnalyticsView state={state} />
           )}
           {view === 'brain' && (
             <BrainView

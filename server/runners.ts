@@ -28,6 +28,19 @@ export interface ParsedOutcome {
   error?: string;
   /** Set when the agent stopped because it needs a human decision. */
   waiting?: string;
+  tokensIn?: number;
+  tokensOut?: number;
+}
+
+function extractUsage(event: JsonEvent | undefined): { tokensIn?: number; tokensOut?: number } {
+  if (!event) return {};
+  const u = event.usage && typeof event.usage === 'object' && !Array.isArray(event.usage)
+    ? event.usage as Record<string, unknown>
+    : undefined;
+  if (!u) return {};
+  const tokensIn = typeof u.input_tokens === 'number' ? u.input_tokens : undefined;
+  const tokensOut = typeof u.output_tokens === 'number' ? u.output_tokens : undefined;
+  return { tokensIn, tokensOut };
 }
 
 export interface StreamParser {
@@ -97,6 +110,7 @@ function hermesParser(): StreamParser {
         success,
         report: typeof result?.text === 'string' ? clip(result.text) : undefined,
         sessionId: str(result?.session_id),
+        ...extractUsage(result),
         error: success
           ? undefined
           : !valid || exitCode === undefined
@@ -147,6 +161,7 @@ function claudeParser(): StreamParser {
         success,
         report: report === undefined ? undefined : clip(report),
         sessionId: str(result?.session_id),
+        ...extractUsage(result),
         error: success
           ? undefined
           : !result || exitCode === undefined

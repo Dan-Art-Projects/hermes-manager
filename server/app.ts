@@ -606,6 +606,8 @@ export function createManager(options: ManagerOptions = {}) {
         error: outcome.error === undefined ? undefined : redact(outcome.error),
         waitingReason: waiting ? redact(waiting) : undefined,
         turns: report ? addTurn(current.turns, 'agent', report) : current.turns,
+        tokensIn: outcome.tokensIn !== undefined ? (current.tokensIn ?? 0) + outcome.tokensIn : current.tokensIn,
+        tokensOut: outcome.tokensOut !== undefined ? (current.tokensOut ?? 0) + outcome.tokensOut : current.tokensOut,
       };
       store.saveTask(updated);
       if (!waiting && outcome.success && updated.report) {
