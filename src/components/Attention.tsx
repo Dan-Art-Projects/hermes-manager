@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Bell, ChevronDown, ChevronUp } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Bell, ChevronRight } from 'lucide-react';
 import type { Agent } from '../../shared/types';
 import { agentStyle, type AttentionItem } from '../api';
 
@@ -10,7 +10,14 @@ const kindNames: Record<AttentionItem['kind'], string> = {
   review: 'Review',
 };
 
-export default function AttentionInbox({
+const kindColor: Record<AttentionItem['kind'], string> = {
+  question: 'amber',
+  blocked: 'red',
+  setup: 'blue',
+  review: 'violet',
+};
+
+export default function AttentionBell({
   items,
   agents,
   onOpen,
@@ -19,46 +26,78 @@ export default function AttentionInbox({
   agents: Agent[];
   onOpen: (item: AttentionItem) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!items.length) return null;
-  const questions = items.filter((item) => item.kind === 'question').length;
-  const visible = expanded ? items : items.slice(0, 5);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const escape = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open]);
+
   return (
-    <section className="attention" aria-label="Needs you">
-      <header>
-        <i className="waiting-dot" aria-hidden="true" />
-        <h2>
-          Needs you · {items.length}
-          {questions > 0 && ` (${questions} question${questions === 1 ? '' : 's'})`}
-        </h2>
-        {items.length > 5 && (
-          <button className="text-button" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
-            {expanded ? 'Show fewer' : `Show all ${items.length}`}
-            {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
-        )}
-      </header>
-      <ul>
-        {visible.map((item) => {
-          const agent = agents.find((a) => a.id === item.agentId);
-          return (
-            <li key={item.key}>
-              <button style={agentStyle(agent)} onClick={() => onOpen(item)}>
-                <span className={`attention-kind ${item.kind}`}>
-                  {item.kind === 'question' && <Bell size={9} aria-hidden="true" />} {kindNames[item.kind]}
-                </span>
-                {agent ? <span className="agent-swatch" title={agent.name} /> : <span />}
-                <span>
-                  <strong>{item.title}</strong>
-                  <span className="detail" title={item.detail}>
-                    {item.detail}
-                  </span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+    <div className="attention-bell-wrap" ref={ref}>
+      <button
+        className={`attention-bell ${items.length > 0 ? 'has-items' : ''} ${open ? 'active' : ''}`}
+        aria-label={items.length > 0 ? `${items.length} items need your attention` : 'No items need attention'}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Bell size={15} />
+        {items.length > 0 && <span className="attention-bell-count">{items.length}</span>}
+      </button>
+
+      {open && (
+        <div className="attention-popup" role="dialog" aria-label="Needs you">
+          <div className="attention-popup-header">
+            <span className="attention-popup-title">
+              <span className="waiting-dot" />
+              Needs you
+            </span>
+            <span className="attention-popup-count">{items.length}</span>
+          </div>
+          {items.length === 0 ? (
+            <div className="attention-popup-empty">
+              <Bell size={20} />
+              <span>Nothing needs your attention right now.</span>
+            </div>
+          ) : (
+            <ul className="attention-popup-list">
+              {items.map((item) => {
+                const agent = agents.find((a) => a.id === item.agentId);
+                return (
+                  <li key={item.key}>
+                    <button
+                      className="attention-popup-item"
+                      style={agentStyle(agent)}
+                      onClick={() => { onOpen(item); setOpen(false); }}
+                    >
+                      <span className={`attention-kind-dot ${kindColor[item.kind]}`} />
+                      <div className="attention-popup-body">
+                        <div className="attention-popup-row">
+                          <span className={`attention-kind-label ${item.kind}`}>{kindNames[item.kind]}</span>
+                          {agent && <span className="attention-popup-agent">{agent.name}</span>}
+                        </div>
+                        <strong>{item.title}</strong>
+                        {item.detail && <span className="attention-popup-detail">{item.detail}</span>}
+                      </div>
+                      <ChevronRight size={13} className="attention-popup-arrow" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

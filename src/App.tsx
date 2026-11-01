@@ -645,6 +645,7 @@ export default function App() {
               {connected ? 'Local connection' : 'Reconnecting'}
             </span>
             <span className="topbar-divider" />
+            <AttentionInbox items={needs} agents={state.agents} onOpen={openAttention} />
             <button
               className="vault-button"
               onClick={async () => {
@@ -854,7 +855,6 @@ export default function App() {
                   </button>
                 </div>
               </div>
-              <AttentionInbox items={needs} agents={state.agents} onOpen={openAttention} />
               <section className="agent-overview">
                 <div className="section-heading">
                   <h2>

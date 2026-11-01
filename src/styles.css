@@ -1853,89 +1853,183 @@ main.board-view {
 }
 
 /* ---------- Needs-you inbox ---------- */
-.attention {
-  margin-bottom: 24px;
-  background: var(--surface);
-  border: 1px solid rgb(245 184 74 / 40%);
-  border-radius: var(--radius-lg);
+/* ── Attention bell (topbar popup) ─────────────────────────────────────── */
+.attention-bell-wrap {
+  position: relative;
 }
-.attention > header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-}
-.attention > header h2 {
-  font-size: 15px;
-}
-.attention > header .text-button {
-  margin-left: auto;
-}
-.attention ul {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0 10px 10px;
-  list-style: none;
-}
-.attention li button {
-  display: grid;
-  grid-template-columns: 82px 10px minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 9px 12px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--agent);
-  border-radius: var(--radius);
-  text-align: left;
-}
-.attention li button:hover {
-  border-color: var(--border-strong);
-  border-left-color: var(--agent);
-}
-.attention li strong {
-  display: block;
-  font-size: 13.5px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.attention li .detail {
-  display: block;
-  font-size: 12.5px;
-  color: var(--text-2);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.attention-kind {
+.attention-bell {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--surface-3);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--text-2);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
-.attention-kind.question {
+.attention-bell:hover,
+.attention-bell.active {
+  background: var(--surface-2);
+  border-color: var(--border);
+  color: var(--text);
+}
+.attention-bell.has-items { color: var(--needs-you); }
+.attention-bell.has-items:hover,
+.attention-bell.has-items.active {
+  background: var(--needs-you-soft);
+  border-color: rgb(245 184 74 / 30%);
+}
+.attention-bell-count {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
   background: var(--needs-you);
   color: var(--needs-you-ink);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
 }
-.attention-kind.blocked {
-  background: var(--danger-soft);
-  color: var(--danger-text);
+.attention-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 360px;
+  max-height: 480px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-.attention-kind.review {
-  background: var(--review-soft);
-  color: var(--review);
+.attention-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.attention-popup-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.attention-popup-count {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--needs-you-soft);
+  color: var(--needs-you);
+}
+.attention-popup-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+.attention-popup-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  border-left: 3px solid var(--agent);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.attention-popup-item:hover {
+  background: var(--surface-2);
+  border-color: var(--border);
+  border-left-color: var(--agent);
+}
+.attention-kind-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--text-3);
+}
+.attention-kind-dot.amber { background: var(--needs-you); }
+.attention-kind-dot.red   { background: var(--danger); }
+.attention-kind-dot.blue  { background: var(--info); }
+.attention-kind-dot.violet { background: var(--review); }
+.attention-popup-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.attention-popup-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.attention-kind-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--surface-3);
+  color: var(--text-3);
+}
+.attention-kind-label.question { background: var(--needs-you-soft); color: var(--needs-you); }
+.attention-kind-label.blocked  { background: var(--danger-soft);    color: var(--danger-text); }
+.attention-kind-label.review   { background: var(--review-soft);    color: var(--review); }
+.attention-popup-agent {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.attention-popup-body strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.attention-popup-detail {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+.attention-popup-arrow { color: var(--text-3); flex-shrink: 0; }
+.attention-popup-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 32px 16px;
+  color: var(--text-3);
+  font-size: 13px;
 }
 
 /* ---------- Agents page ---------- */
@@ -3347,12 +3441,6 @@ main.board-view {
   }
   .agent-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .attention li button {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-  .attention li button > span:nth-child(2) {
-    display: none;
   }
   .terminal-notes,
   .workspace-form,
